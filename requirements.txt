@@ -1,0 +1,7 @@
+keyboard
+pystray
+Pillow
+plyer
+PyQt6
+pyperclip
+pyinstaller
