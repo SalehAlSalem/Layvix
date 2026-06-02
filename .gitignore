@@ -22,3 +22,9 @@ user_dict.json
 # Temp
 rebrand.py
 build_installer.ps1
+
+# Raw dictionary source files (only keep compressed .json.gz)
+ar_freq_raw.txt
+en_freq_raw.txt
+ar_words.txt
+en_words.txt

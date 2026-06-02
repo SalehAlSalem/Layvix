@@ -1,8 +1,12 @@
 import json
 import os
+import sys
 import winreg
+from logger import get_logger, get_data_dir
 
-SETTINGS_FILE = "settings.json"
+logger = get_logger()
+
+SETTINGS_FILE = os.path.join(get_data_dir(), "settings.json")
 
 # Default settings
 config = {
@@ -13,25 +17,29 @@ config = {
     "excluded_apps": ["cmd.exe", "powershell.exe", "WindowsTerminal.exe"]
 }
 
+
 def load_settings():
     global config
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
-                # Merge defaults
                 for k, v in loaded.items():
                     config[k] = v
-        except:
-            pass
+            logger.info("Settings loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load settings: {e}")
+
 
 def save_settings():
     try:
         with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
         apply_startup_setting()
-    except:
-        pass
+        logger.info("Settings saved successfully")
+    except Exception as e:
+        logger.error(f"Failed to save settings: {e}")
+
 
 def get_setting(key):
     val = config.get(key)
@@ -39,19 +47,19 @@ def get_setting(key):
         return []
     return val
 
+
 def set_setting(key, value):
     config[key] = value
     save_settings()
+
 
 def apply_startup_setting():
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_ALL_ACCESS)
         app_name = "Layvix"
         if config.get("run_on_startup", False):
-            # Try to find the executable path
             exe_path = os.path.abspath(sys.argv[0])
-            if exe_path.endswith(".py"): 
-                # If running from python, don't set registry to avoid weird behavior
+            if exe_path.endswith(".py"):
                 return
             winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
         else:
@@ -61,8 +69,8 @@ def apply_startup_setting():
                 pass
         winreg.CloseKey(key)
     except Exception as e:
-        print(f"Failed to set startup registry: {e}")
+        logger.error(f"Failed to set startup registry: {e}")
+
 
 # Initialize
-import sys
 load_settings()

@@ -1,10 +1,12 @@
 import json
 import os
+from logger import get_logger, get_data_dir
 
-USER_DICT_FILE = "user_dict.json"
+logger = get_logger()
 
-# In-memory store
+USER_DICT_FILE = os.path.join(get_data_dir(), "user_dict.json")
 user_dict = {}
+
 
 def load_user_dict():
     global user_dict
@@ -12,25 +14,31 @@ def load_user_dict():
         try:
             with open(USER_DICT_FILE, 'r', encoding='utf-8') as f:
                 user_dict = json.load(f)
+            logger.info(f"User dictionary loaded: {len(user_dict)} entries")
         except Exception as e:
-            print(f"Error loading user dictionary: {e}")
+            logger.error(f"Failed to load user dictionary: {e}")
             user_dict = {}
     else:
         user_dict = {}
+
 
 def save_user_dict():
     try:
         with open(USER_DICT_FILE, 'w', encoding='utf-8') as f:
             json.dump(user_dict, f, ensure_ascii=False, indent=4)
+        logger.info(f"User dictionary saved: {len(user_dict)} entries")
     except Exception as e:
-        print(f"Error saving user dictionary: {e}")
+        logger.error(f"Failed to save user dictionary: {e}")
 
-def add_correction(wrong_word, correct_word):
-    user_dict[wrong_word] = correct_word
+
+def add_correction(wrong, correct):
+    user_dict[wrong] = correct
     save_user_dict()
+
 
 def get_correction(word):
     return user_dict.get(word)
+
 
 # Initialize
 load_user_dict()
