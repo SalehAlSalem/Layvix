@@ -1,0 +1,51 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on version tags (e.g., v3.3.1)
+  workflow_dispatch: # Allow manual trigger from GitHub Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13' # Or whatever version is required
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --noconfirm Layvix.spec
+
+    - name: Create Zip Archive
+      run: |
+        Compress-Archive -Path dist\Layvix\* -DestinationPath dist\Layvix-Portable.zip
+
+    - name: Build Inno Setup Installer
+      run: |
+        # ISCC is pre-installed on GitHub Actions Windows runners
+        iscc LayvixSetup.iss
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: |
+          dist/Layvix-Portable.zip
+          installer/Layvix_Setup.exe
+        generate_release_notes: true

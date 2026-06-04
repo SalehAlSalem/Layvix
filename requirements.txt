@@ -5,3 +5,8 @@ plyer
 PyQt6
 pyperclip
 pyinstaller
+pynput
+scikit-learn
+numpy
+scipy
+pywin32
