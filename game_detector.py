@@ -30,17 +30,39 @@ _hook_handle = None
 
 
 def _is_window_fullscreen(hwnd):
-    """Check if a window covers the entire screen (fullscreen)."""
+    """Check if a window is in true fullscreen exclusive mode (not just maximized)."""
     try:
         if not hwnd or not user32.IsWindow(hwnd):
             return False
+        
+        # Get window title to exclude our own windows and dev tools
+        title_buf = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, title_buf, 256)
+        title = title_buf.value.lower()
+        
+        # Ignore our own windows, terminals, and IDEs
+        ignore_titles = ['layvix', 'antigravity', 'visual studio', 'vscode', 
+                        'powershell', 'cmd', 'terminal', 'python']
+        if any(t in title for t in ignore_titles):
+            return False
+        
+        # Check window style - true fullscreen apps have NO borders (WS_POPUP style)
+        GWL_STYLE = -16
+        WS_POPUP = 0x80000000
+        WS_CAPTION = 0x00C00000
+        style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+        
+        # A true fullscreen window typically has WS_POPUP and no WS_CAPTION
+        has_caption = bool(style & WS_CAPTION)
+        if has_caption:
+            return False  # Normal maximized window, not fullscreen exclusive
         
         # Get window rect
         rect = ctypes.wintypes.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
         
-        # Get monitor info for the monitor this window is on
-        monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+        # Get monitor info
+        monitor = user32.MonitorFromWindow(hwnd, 2)
         
         class MONITORINFO(ctypes.Structure):
             _fields_ = [
@@ -54,7 +76,6 @@ def _is_window_fullscreen(hwnd):
         mi.cbSize = ctypes.sizeof(MONITORINFO)
         user32.GetMonitorInfoW(monitor, ctypes.byref(mi))
         
-        # Check if window covers the entire monitor
         screen = mi.rcMonitor
         return (
             rect.left <= screen.left and

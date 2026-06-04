@@ -14,7 +14,14 @@ config = {
     "undo_hotkey": "ctrl+alt+shift+z",
     "manual_hotkey": "ctrl+alt+shift+s",
     "run_on_startup": False,
-    "excluded_apps": ["cmd.exe", "powershell.exe", "WindowsTerminal.exe"]
+    "excluded_apps": ["cmd.exe", "powershell.exe", "WindowsTerminal.exe"],
+    "ai_confidence_threshold": 0.85,
+    "min_word_length": 3,
+    "stats": {
+        "corrections_today": 0,
+        "total_corrections": 0,
+        "words_learned": 0
+    }
 }
 
 
@@ -43,6 +50,8 @@ def save_settings():
 
 def get_setting(key):
     val = config.get(key)
+    if val is None:
+        val = DEFAULT_CONFIG.get(key)
     if key == "excluded_apps" and not isinstance(val, list):
         return []
     return val

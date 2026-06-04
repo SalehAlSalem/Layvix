@@ -1,542 +1,435 @@
 import sys
+import os
 import ctypes
-import keyboard
+import pynput.keyboard
+import mouse
 import time
 import threading
-import pystray
-from plyer import notification
-from PIL import Image, ImageDraw
-from logger import get_logger, log_activity
-import dictionary
-import user_dictionary
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QThread, pyqtSignal
+
 import settings
-import active_window
+import user_dictionary
 import game_detector
+import active_window
 from mapper import convert_word
 from layout_helper import get_current_language, switch_language
-from PyQt6.QtWidgets import QApplication
+import ai_engine
+import learner
+from logger import get_logger
+
+import gui
+from gui import MainWindow
+from plyer import notification
 
 logger = get_logger()
 
-# --- SINGLE INSTANCE LOCK ---
-mutex_name = "Global\\Layvix_v1_Mutex"
-kernel32 = ctypes.windll.kernel32
-mutex = kernel32.CreateMutexW(None, False, mutex_name)
-if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-    user32 = ctypes.windll.user32
-    hwnd = user32.FindWindowW(None, "Layvix - Dashboard")
-    if hwnd:
-        user32.ShowWindow(hwnd, 5)
-        user32.SetForegroundWindow(hwnd)
-    sys.exit(0)
+# Global stats
+_stats = settings.get_setting("stats")
 
-# --- Global State ---
-current_word = []
-enabled = True
-context_history = []  # list of 'ar' or 'en' for last N valid words
-overlay_window = None
-main_window = None
-last_key_time = 0
-undo_history = []
-shutdown_event = threading.Event()  # Clean shutdown signal
-_stats = {"corrections_today": 0, "total_corrections": 0, "words_learned": 0}
+def save_stats():
+    settings.set_setting("stats", _stats)
 
-UNDO_HISTORY_MAX = 50
-CONTEXT_HISTORY_MAX = 5
-import mouse
-
-
-# --- Context Tracking ---
-def add_to_context(lang):
-    context_history.append(lang)
-    if len(context_history) > CONTEXT_HISTORY_MAX:
-        context_history.pop(0)
-
-
-def get_context_lang():
-    """Returns the dominant language in recent context, or None."""
-    if not context_history:
-        return None
-    ar_count = context_history.count('ar')
-    en_count = context_history.count('en')
-    if ar_count > en_count:
-        return 'ar'
-    elif en_count > ar_count:
-        return 'en'
-    return None
-
-
-def get_context_strength():
-    """Returns how strong the context is (0.0 to 1.0).
-    1.0 = all last N words are same language."""
-    if len(context_history) < 3:
-        return 0.0
-    dominant = get_context_lang()
-    if not dominant:
-        return 0.0
-    count = context_history[-3:].count(dominant)
-    return count / 3.0
-
-
-# --- Correction Engine ---
-def correct_word(word_to_delete, target_word):
-    if shutdown_event.is_set():
-        return
-    threading.Thread(target=_correct_word_thread, args=(word_to_delete, target_word), daemon=True).start()
-
-
-def _correct_word_thread(word_to_delete, target_word):
-    if shutdown_event.is_set():
-        return
-    
-    undo_history.append({'time': time.time(), 'wrong': word_to_delete, 'correct': target_word})
-    if len(undo_history) > UNDO_HISTORY_MAX:
-        undo_history.pop(0)
-    
-    for _ in range(len(word_to_delete) + 1):
-        if shutdown_event.is_set():
-            return
-        keyboard.send('backspace')
-        time.sleep(0.01)
-    
-    switch_language()
-    keyboard.write(target_word)
-    keyboard.send('space')
-    
-    _stats["corrections_today"] += 1
-    _stats["total_corrections"] += 1
-    log_activity("تصحيح", f"'{word_to_delete}' → '{target_word}'")
-    
-    try:
-        notification.notify(title="تم التصحيح!", message=f"'{word_to_delete}' → '{target_word}'", app_name="Layvix", timeout=1)
-    except Exception as e:
-        logger.warning(f"Notification failed: {e}")
-
-
-# --- Undo System (Self-Learning via Undo) ---
-def trigger_undo():
-    if shutdown_event.is_set():
-        return
-    threading.Thread(target=_trigger_undo_thread, daemon=True).start()
-
-
-def _trigger_undo_thread():
-    if shutdown_event.is_set() or not enabled or not undo_history:
-        return
-    
-    user32 = ctypes.windll.user32
-    for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C]:
-        user32.keybd_event(vk, 0, 2, 0)
-    time.sleep(0.05)
-    
-    last = undo_history.pop()
-    
-    if time.time() - last['time'] < 30:
-        for _ in range(len(last['correct']) + 1):
-            if shutdown_event.is_set():
-                return
-            keyboard.send('backspace')
-            time.sleep(0.01)
+class CoreWorker(QThread):
+    def __init__(self):
+        super().__init__()
+        self.enabled = True
+        self.running = True
+        self.is_correcting = False
+        self.current_word = []
+        self.last_key_time = 0
+        self.undo_history = []
+        self.shift_pressed = False
+        self.listener = None
+        self.auto_mode = True  # True = auto correct, False = manual only
+        self.last_typed_word = ""
+        self.last_manual_word = None
         
-        switch_language()
-        keyboard.write(last['wrong'])
-        keyboard.send('space')
+    def run(self):
+        import keyboard
+        self.setup_hotkeys()
         
-        # Self-learning: add to ignore list via Undo
-        user_dictionary.add_correction(last['wrong'], last['wrong'])
-        _stats["words_learned"] += 1
-        log_activity("تعلّم", f"تم حفظ '{last['wrong']}' كاستثناء عبر التراجع")
-        
-        if main_window:
-            from PyQt6.QtCore import QMetaObject, Qt
-            QMetaObject.invokeMethod(main_window, "load_dictionary", Qt.ConnectionType.QueuedConnection)
-        
+        while self.running:
+            time.sleep(0.1)
+            
         try:
-            notification.notify(title="التراجع الذكي ↩️", message=f"تم إرجاع '{last['wrong']}' كاستثناء.", app_name="Layvix", timeout=2)
-        except Exception as e:
-            logger.warning(f"Undo notification failed: {e}")
-
-
-# --- Manual Convert ---
-def manual_convert_selection():
-    if shutdown_event.is_set():
-        return
-    threading.Thread(target=_manual_convert_thread, daemon=True).start()
-
-
-def _manual_convert_thread():
-    if shutdown_event.is_set():
-        return
-    try:
-        import winsound
-        try:
-            winsound.MessageBeep()
-        except Exception:
+            keyboard.unhook(self.on_key_event)
+        except:
             pass
         
+    def stop(self):
+        self.running = False
+        self.wait()
+
+    def set_enabled(self, val):
+        self.enabled = val
+
+    def setup_hotkeys(self):
+        import keyboard
+        try:
+            keyboard.unhook_all()
+        except:
+            pass
+        
+        undo_hk = settings.get_setting("undo_hotkey") or "pause"
+        try: 
+            keyboard.add_hotkey(undo_hk, self.trigger_undo)
+            logger.info(f"[HOTKEYS] Registered undo hotkey: {undo_hk}")
+        except Exception as e: 
+            logger.error(f"[HOTKEYS] Failed to register undo hotkey '{undo_hk}': {e}")
+            
+        manual_hk = settings.get_setting("manual_hotkey") or "shift+pause"
+        try: 
+            keyboard.add_hotkey(manual_hk, self.trigger_manual)
+            logger.info(f"[HOTKEYS] Registered manual hotkey: {manual_hk}")
+        except Exception as e: 
+            logger.error(f"[HOTKEYS] Failed to register manual hotkey '{manual_hk}': {e}")
+        
+        # Re-hook our main listener after unhook_all
+        try: keyboard.hook(self.on_key_event)
+        except: pass
+            
+    def trigger_manual(self):
+        logger.info(f"[DEBUG] trigger_manual called! enabled={self.enabled}, is_correcting={self.is_correcting}")
+        if not self.enabled or self.is_correcting:
+            return
+            
+        import pyperclip
+        import keyboard
+        import time
+        
+        # 1. Check if text is currently highlighted by simulating Ctrl+C
+        old_clipboard = pyperclip.paste()
+        pyperclip.copy('')  # Clear it temporarily
+        
+        # Release modifiers just in case before sending Ctrl+C
+        for mod in ['ctrl', 'alt', 'shift', 'windows', 'right ctrl', 'right alt', 'right shift', 'left ctrl', 'left alt', 'left shift']:
+            if keyboard.is_pressed(mod):
+                keyboard.release(mod)
+        time.sleep(0.05)
+        
+        keyboard.send('ctrl+c')
+        time.sleep(0.1) # Wait for OS to copy
+        
+        selected_text = pyperclip.paste()
+        is_selection = bool(selected_text.strip())
+        
+        if is_selection:
+            word_str = selected_text
+            pyperclip.copy(old_clipboard) # Restore old clipboard
+        else:
+            pyperclip.copy(old_clipboard) # Restore if empty
+            # 2. Fallback to typed word logic
+            word_str = "".join(self.current_word).strip()
+            if not word_str:
+                word_str = self.last_typed_word
+                
+            if not word_str:
+                return
+                
+            self.current_word.clear()
+            
+        lang_id = get_current_language()
+        current_layout = 'ar' if lang_id == 1 else 'en'
+        
+        # Determine actual typed layout by character content
+        is_arabic = any('\u0600' <= c <= '\u06FF' for c in word_str)
+        
+        if not is_arabic:  # Typed in English chars, user wants Arabic
+            corrected = convert_word(word_str, 'en_to_ar')
+            target_layout = 'ar'
+        else:              # Typed in Arabic chars, user wants English
+            corrected = convert_word(word_str, 'ar_to_en')
+            target_layout = 'en'
+            
+        logger.info(f"[MANUAL] User forced correction for '{word_str}' \u2192 '{corrected}' (selection: {is_selection})")
+        self.do_correction(word_str, corrected, switch=True, predicted_layout=target_layout, is_selection=is_selection)
+        
+        # LEARN: user manually corrected -> teach AI the correct layout
+        learner.learn_from_manual(convert_word(word_str, 'ar_to_en') if is_arabic else word_str, 'ar' if is_arabic else 'en', target_layout)
+
+    def on_key_event(self, event):
+        if event.event_type == 'up':
+            if event.name == 'shift':
+                self.shift_pressed = False
+            return
+            
+        if not self.enabled or self.is_correcting:
+            return
+            
+        import keyboard
+        # Ignore normal typing if major modifiers are pressed (e.g. during a hotkey)
+        if keyboard.is_pressed('ctrl') or keyboard.is_pressed('alt') or keyboard.is_pressed('windows'):
+            return
+            
+        try:
+            name = event.name
+            if len(name) == 1:
+                if time.time() - self.last_key_time > 2.0:
+                    self.current_word.clear()
+                self.current_word.append(name)
+                self.last_key_time = time.time()
+            elif name == 'space':
+                word_str = "".join(self.current_word).strip()
+                if word_str:
+                    # Run process_word in a background thread so we don't block the hook
+                    threading.Thread(target=self._process_word, args=(word_str,), daemon=True).start()
+                self.current_word.clear()
+            elif name == 'backspace':
+                if self.current_word:
+                    self.current_word.pop()
+            elif name == 'enter':
+                self.current_word.clear()
+            elif name == 'shift':
+                self.shift_pressed = True
+        except:
+            pass
+
+    def trigger_undo(self):
+        if not self.enabled or not self.undo_history or self.is_correcting:
+            return
+            
+        self.is_correcting = True
         user32 = ctypes.windll.user32
         for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C]:
             user32.keybd_event(vk, 0, 2, 0)
         time.sleep(0.05)
+        KEYEVENTF_SCANCODE = 0x0008
+        KEYEVENTF_KEYUP = 0x0002
+        last = self.undo_history.pop()
+        if time.time() - last['time'] < 30:
+            for _ in range(len(last['correct']) + 1):
+                user32.keybd_event(0, 0x0E, KEYEVENTF_SCANCODE, 0)
+                user32.keybd_event(0, 0x0E, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+            
+            if last.get('switched', True):
+                switch_language()
+                time.sleep(0.05)
+            
+            import pyperclip
+            old_cb = ""
+            try:
+                old_cb = pyperclip.paste()
+            except:
+                pass
+                
+            try:
+                pyperclip.copy(last['wrong'] + ' ')
+                time.sleep(0.05)
+                user32.keybd_event(0x11, 0, 0, 0)
+                user32.keybd_event(0x56, 0, 0, 0)
+                time.sleep(0.02)
+                user32.keybd_event(0x56, 0, 2, 0)
+                user32.keybd_event(0x11, 0, 2, 0)
+                time.sleep(0.1)
+            finally:
+                if old_cb:
+                    try:
+                        pyperclip.copy(old_cb)
+                    except:
+                        pass
+            
+            user_dictionary.add_correction(last['wrong'], last['wrong'])
+            _stats["words_learned"] += 1
+            save_stats()
+            
+            # LEARN: user undid -> AI was wrong
+            predicted = last.get('predicted_layout', 'ar')
+            learner.learn_from_undo(last['wrong'], predicted)
+            
+            try:
+                notification.notify(title="التراجع الذكي ↩️", message=f"تم إرجاع '{last['wrong']}' كاستثناء.", app_name="Layvix", timeout=2)
+            except:
+                pass
+            
+            _stats["corrections_today"] -= 1
+            _stats["total_corrections"] -= 1
+            save_stats()
+            
+        self.is_correcting = False
+
+
+
+    def _process_word(self, word_str):
+        """Pure AI-based layout correction. No dictionaries."""
+        active_exe = active_window.get_active_window_exe()
+        if active_exe and active_exe in settings.get_setting("excluded_apps"):
+            logger.info(f"[SKIP] excluded app: {active_exe}")
+            return
+            
+        # Check user overrides first
+        user_correction = user_dictionary.get_correction(word_str)
+        if user_correction:
+            if user_correction != word_str:
+                self.do_correction(word_str, user_correction)
+            return
         
+        # Skip very short words (1-2 chars) — too ambiguous
+        if len(word_str) < 3:
+            logger.info(f"[SKIP] too short: '{word_str}'")
+            return
+            
+        self.last_typed_word = word_str
+        lang_id = get_current_language()
+        current_layout = 'ar' if lang_id == 1 else 'en'
+        
+        is_arabic = any('\u0600' <= c <= '\u06FF' for c in word_str)
+        
+        # AI only understands QWERTY English chars, so map Arabic typed chars to their English keys first
+        test_word = word_str
+        if is_arabic:
+            test_word = convert_word(word_str, 'ar_to_en')
+        
+        # Ask the AI
+        predicted_layout, confidence = ai_engine.predict_layout(test_word)
+        logger.info(f"[AI] '{word_str}' (test='{test_word}') \u2192 predicted={predicted_layout} conf={confidence:.2%} current={current_layout}")
+        
+        # Only correct if AI is confident enough (> 75%)
+        if confidence < 0.75 or predicted_layout == 'unknown':
+            logger.info(f"[SKIP] low confidence or unknown")
+            return
+            
+        # If AI says this word belongs to a different layout than current
+        if predicted_layout != current_layout:
+            if current_layout == 'en':
+                corrected = convert_word(word_str, 'en_to_ar')
+            else:
+                corrected = convert_word(word_str, 'ar_to_en')
+            
+            if self.auto_mode:
+                logger.info(f"[CORRECT] '{word_str}' → '{corrected}' (auto)")
+                self.do_correction(word_str, corrected, switch=True, predicted_layout=predicted_layout)
+            else:
+                logger.info(f"[MANUAL MODE] would correct '{word_str}' → '{corrected}' but auto is off")
+        else:
+            logger.info(f"[OK] same layout, no correction needed")
+            
+    def do_correction(self, wrong, correct, switch=True, predicted_layout='ar', is_selection=False):
+        self.is_correcting = True
+        self.undo_history.append({'time': time.time(), 'wrong': wrong, 'correct': correct, 'switched': switch, 'predicted_layout': predicted_layout})
+        if len(self.undo_history) > 50: self.undo_history.pop(0)
+        
+        user32 = ctypes.windll.user32
+        import keyboard
         import pyperclip
-        try:
-            pyperclip.copy("")
-        except Exception:
-            pass
+        
+        # Wait for user to physically release modifiers to avoid shortcut collision
+        modifiers = ['ctrl', 'alt', 'shift', 'windows', 'right ctrl', 'right alt', 'right shift', 'left ctrl', 'left alt', 'left shift']
+        timeout = time.time() + 2.0
+        while time.time() < timeout:
+            if not any(keyboard.is_pressed(m) for m in modifiers):
+                break
+            time.sleep(0.05)
+            
         time.sleep(0.05)
         
-        user32.keybd_event(0x11, 0, 0, 0)
-        user32.keybd_event(0x43, 0, 0, 0)
-        time.sleep(0.02)
-        user32.keybd_event(0x43, 0, 2, 0)
-        user32.keybd_event(0x11, 0, 2, 0)
-        time.sleep(0.2)
+        KEYEVENTF_SCANCODE = 0x0008
+        KEYEVENTF_KEYUP = 0x0002
         
-        text = ""
-        for _ in range(5):
-            try:
-                text = pyperclip.paste().strip()
-                if text:
-                    break
-            except Exception:
-                time.sleep(0.1)
+        if not is_selection:
+            for _ in range(len(wrong) + 1):
+                user32.keybd_event(0, 0x0E, KEYEVENTF_SCANCODE, 0)
+                user32.keybd_event(0, 0x0E, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+            
+        if switch:
+            switch_language()
+            time.sleep(0.05)
         
-        if not text:
+        import pyperclip
+        old_cb = ""
+        try:
+            old_cb = pyperclip.paste()
+        except:
+            pass
+            
+        try:
+            pyperclip.copy(correct + ' ')
+            time.sleep(0.05)
             user32.keybd_event(0x11, 0, 0, 0)
-            user32.keybd_event(0x2D, 0, 0, 0)
+            user32.keybd_event(0x56, 0, 0, 0)
             time.sleep(0.02)
-            user32.keybd_event(0x2D, 0, 2, 0)
+            user32.keybd_event(0x56, 0, 2, 0)
             user32.keybd_event(0x11, 0, 2, 0)
-            time.sleep(0.2)
-            try:
-                text = pyperclip.paste().strip()
-            except Exception:
-                pass
+            time.sleep(0.1)
+        finally:
+            if old_cb:
+                try:
+                    pyperclip.copy(old_cb)
+                except:
+                    pass
         
-        if not text:
-            logger.warning("Manual convert: clipboard empty after copy attempts")
-            return
+        _stats["corrections_today"] += 1
+        _stats["total_corrections"] += 1
+        save_stats()
+        self.is_correcting = False
         
-        has_ar = any('\u0600' <= c <= '\u06FF' for c in text)
-        if has_ar:
-            converted = convert_word(text, "ar_to_en")
-            target_layout = 'en'
-        else:
-            converted = convert_word(text, "en_to_ar")
-            target_layout = 'ar'
-        
-        for _ in range(5):
-            try:
-                pyperclip.copy(converted)
-                break
-            except Exception:
-                time.sleep(0.1)
-        
-        time.sleep(0.1)
-        user32.keybd_event(0x11, 0, 0, 0)
-        user32.keybd_event(0x56, 0, 0, 0)
-        time.sleep(0.02)
-        user32.keybd_event(0x56, 0, 2, 0)
-        user32.keybd_event(0x11, 0, 2, 0)
-        
-        lang_id = get_current_language()
-        is_currently_ar = (lang_id == 1025)
-        if target_layout == 'en' and is_currently_ar:
-            switch_language()
-        elif target_layout == 'ar' and not is_currently_ar:
-            switch_language()
-        
-        log_activity("تحويل يدوي", f"'{text[:20]}...' → '{converted[:20]}...'")
-        
-        try:
-            notification.notify(title="التحويل اليدوي ✅", message="تم تحويل النص بنجاح.", app_name="Layvix", timeout=1)
-        except Exception:
-            pass
-    except Exception as e:
-        logger.error(f"Error in manual_convert: {e}")
+        # LEARN: reinforce accepted correction after 5 seconds if not undone
+        wrong_copy = wrong
+        pred_copy = predicted_layout
+        def delayed_learn():
+            time.sleep(5)
+            # If user didn't undo within 5 seconds, reinforce
+            if self.undo_history and self.undo_history[-1]['wrong'] == wrong_copy:
+                learner.learn_from_accepted(wrong_copy, pred_copy)
+        threading.Thread(target=delayed_learn, daemon=True).start()
 
-
-# --- Keyboard Hook (Context Tracker as Tie-Breaker) ---
-def on_key(event):
-    global current_word, enabled, last_key_time
-    if not enabled:
-        return
-    
-    # Skip if fullscreen game is active
-    if game_detector.is_fullscreen():
-        return
-    
-    try:
-        # Timeout: clear buffer if user paused typing
-        if time.time() - last_key_time > 1.5:
-            current_word.clear()
-        last_key_time = time.time()
-        
-        # Arrow keys / navigation = clear buffer
-        if event.name in ['left', 'right', 'up', 'down', 'home', 'end', 'page up', 'page down']:
-            current_word.clear()
-            return
-        
-        if event.event_type == keyboard.KEY_DOWN:
-            if event.name in ['space', 'enter']:
-                word_str = "".join(current_word)
-                if len(word_str) > 0:
-                    _process_word(word_str)
-                current_word.clear()
-            elif event.name == 'backspace':
-                if len(current_word) > 0:
-                    current_word.pop()
-            elif len(event.name) == 1:
-                current_word.append(event.name)
-    except Exception as exc:
-        logger.error(f"Error in on_key: {exc}")
-
-
-def _process_word(word_str):
-    """Core correction logic with Context as Tie-Breaker."""
-    # Check excluded apps
-    active_exe = active_window.get_active_window_exe()
-    if active_exe and active_exe in settings.get_setting("excluded_apps"):
-        return
-    
-    # 1. User Dictionary has TOP priority
-    user_correction = user_dictionary.get_correction(word_str)
-    if user_correction:
-        if user_correction != word_str:
-            correct_word(word_str, user_correction)
-        return
-    
-    # 2. Detect current layout
-    lang_id = get_current_language()
-    current_layout = 'ar' if lang_id == 1025 else 'en'
-    
-    # 3. Check if valid in current layout
-    if current_layout == 'en' and dictionary.is_valid_english(word_str):
-        add_to_context('en')
-        return  # Valid in current layout, don't touch it!
-    elif current_layout == 'ar' and dictionary.is_valid_arabic(word_str):
-        add_to_context('ar')
-        return  # Valid in current layout, don't touch it!
-    
-    # 4. Word is NOT valid in current layout. Try converting.
-    en_word = convert_word(word_str, "ar_to_en")
-    ar_word = convert_word(word_str, "en_to_ar")
-    
-    en_freq = dictionary.get_english_frequency(en_word)
-    ar_freq = dictionary.get_arabic_frequency(ar_word)
-    
-    en_valid = en_freq > 0
-    ar_valid = ar_freq > 0
-    
-    # --- GOLDEN RULE: Dictionary Validity beats Context ---
-    
-    # Case A: Valid in exactly ONE language → correct immediately
-    if current_layout == 'en' and ar_valid and not en_valid:
-        correct_word(word_str, ar_word)
-        add_to_context('ar')
-        return
-    
-    if current_layout == 'ar' and en_valid and not ar_valid:
-        correct_word(word_str, en_word)
-        add_to_context('en')
-        return
-    
-    # Case B: Valid in BOTH languages → Context is the tie-breaker
-    if ar_valid and en_valid:
-        ctx = get_context_lang()
-        ctx_strength = get_context_strength()
-        
-        if current_layout == 'en':
-            # Currently English, both are valid
-            if ctx == 'ar' and ctx_strength >= 0.66:
-                # Strong Arabic context → switch to Arabic
-                correct_word(word_str, ar_word)
-                add_to_context('ar')
-            else:
-                # Default: use frequency as final tie-breaker
-                if ar_freq > en_freq * 2:  # Arabic must be significantly more frequent
-                    correct_word(word_str, ar_word)
-                    add_to_context('ar')
-                # else: leave it alone
-        
-        elif current_layout == 'ar':
-            if ctx == 'en' and ctx_strength >= 0.66:
-                correct_word(word_str, en_word)
-                add_to_context('en')
-            else:
-                if en_freq > ar_freq * 2:
-                    correct_word(word_str, en_word)
-                    add_to_context('en')
-    
-    # Case C: Valid in NEITHER language → don't touch it
-
-
-# --- Overlay ---
-def trigger_overlay():
-    if not enabled:
-        return
-    if overlay_window:
-        overlay_window.trigger_show.emit("")
-
-
-# --- Hotkeys ---
-hotkey_callbacks = []
-
-
-def setup_hotkeys():
-    global hotkey_callbacks
-    for cb in hotkey_callbacks:
-        try:
-            keyboard.remove_hotkey(cb)
-        except Exception:
-            pass
-    hotkey_callbacks.clear()
-    
-    over_hk = settings.get_setting("overlay_hotkey") or "ctrl+f12"
-    undo_hk = settings.get_setting("undo_hotkey") or "pause"
-    manual_hk = settings.get_setting("manual_hotkey") or "shift+pause"
-    
-    try:
-        cb1 = keyboard.add_hotkey(over_hk, trigger_overlay)
-        if cb1:
-            hotkey_callbacks.append(cb1)
-    except Exception as e:
-        logger.error(f"Failed to register overlay hotkey '{over_hk}': {e}")
-    
-    try:
-        cb2 = keyboard.add_hotkey(undo_hk, trigger_undo)
-        if cb2:
-            hotkey_callbacks.append(cb2)
-    except Exception as e:
-        logger.error(f"Failed to register undo hotkey '{undo_hk}': {e}")
-    
-    try:
-        cb3 = keyboard.add_hotkey(manual_hk, manual_convert_selection)
-        if cb3:
-            hotkey_callbacks.append(cb3)
-    except Exception as e:
-        logger.error(f"Failed to register manual hotkey '{manual_hk}': {e}")
-    
-    logger.info(f"Hotkeys registered: overlay={over_hk}, undo={undo_hk}, manual={manual_hk}")
-
-
-# --- Tray Icon ---
-def create_image():
-    image = Image.new('RGB', (64, 64), color=(18, 22, 25))
-    dc = ImageDraw.Draw(image)
-    dc.text((6, 18), "LVX", fill=(0, 210, 255))
-    return image
-
-
-def on_tray_click(icon, item):
-    if main_window:
-        main_window.show_dashboard_signal.emit()
-
-
-def on_quit(icon, item):
-    logger.info("Shutting down Layvix...")
-    
-    # 1. Unhook keyboard FIRST
-    try:
-        keyboard.unhook_all()
-    except Exception as e:
-        logger.error(f"Error unhooking keyboard: {e}")
-    
-    # 2. Signal all threads to stop
-    shutdown_event.set()
-    
-    # 3. Stop game detector
-    try:
-        game_detector.stop()
-    except Exception:
-        pass
-    
-    # 4. Stop tray icon
-    try:
-        icon.stop()
-    except Exception:
-        pass
-    
-    # 5. Quit Qt app
-    try:
-        app = QApplication.instance()
-        if app:
-            app.quit()
-    except Exception:
-        pass
-    
-    logger.info("Layvix shutdown complete")
-
-
-def setup_tray():
-    menu = pystray.Menu(
-        pystray.MenuItem('لوحة التحكم (Dashboard)', on_tray_click, default=True),
-        pystray.MenuItem('إغلاق', on_quit)
-    )
-    icon = pystray.Icon("Layvix", create_image(), "Layvix - Smart Layout Fixer", menu)
-    icon.run()
-
-
-def on_ui_toggle():
-    global enabled
-    enabled = not enabled
-    state = "enabled" if enabled else "disabled"
-    log_activity("تبديل", f"البرنامج الآن: {'مُفعل' if enabled else 'متوقف'}")
-    if main_window:
-        main_window.update_toggle_button(enabled)
-
+# Global access
+_worker = None
 
 def get_stats():
-    return _stats.copy()
+    return _stats
 
+def stop_all():
+    if _worker:
+        _worker.stop()
 
-# --- Fullscreen callback ---
-def on_fullscreen_change(is_fs):
-    if is_fs:
-        log_activity("وضع اللعبة", "تم تعطيل المصحح (ملء الشاشة)")
-    else:
-        log_activity("وضع اللعبة", "تم تفعيل المصحح (خروج من ملء الشاشة)")
-
-
-# --- Main ---
 def main():
-    from ui_overlay import OverlayWindow
-    from ui_main import MainWindow
-    
-    app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
-    
-    global overlay_window, main_window
-    overlay_window = OverlayWindow()
-    main_window = MainWindow()
-    
-    main_window.toggle_app_signal.connect(on_ui_toggle)
-    main_window.hotkeys_changed_signal.connect(setup_hotkeys)
-    
-    main_window.show()
-    
-    setup_hotkeys()
-    keyboard.hook(on_key)
-    
-    # Mouse click clears typing buffer
     try:
-        mouse.on_click(lambda: current_word.clear())
-    except Exception as e:
-        logger.warning(f"Failed to hook mouse: {e}")
-    
-    # Start game detector (event-driven, zero CPU)
-    game_detector.start(on_change_callback=on_fullscreen_change)
-    
-    # Start tray icon
-    tray_thread = threading.Thread(target=setup_tray, daemon=True, name="TrayIcon")
-    tray_thread.start()
-    
-    logger.info("Layvix v1.0.1 started successfully")
-    log_activity("بدء", "تم تشغيل Layvix v1.0.1")
-    
-    sys.exit(app.exec())
+        # Single instance lock
+        mutex_name = "Global\\Layvix_v2_Mutex"
+        kernel32 = ctypes.windll.kernel32
+        mutex = kernel32.CreateMutexW(None, False, mutex_name)
+        last_error = kernel32.GetLastError()
+        if last_error == 183: # ERROR_ALREADY_EXISTS
+            user32 = ctypes.windll.user32
+            hwnd = user32.FindWindowW(None, f"Layvix v{gui.VERSION}")
+            if hwnd:
+                user32.ShowWindow(hwnd, 5)
+                user32.SetForegroundWindow(hwnd)
+            sys.exit(1)
 
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)
+        
+        global _worker
+        _worker = CoreWorker()
+        window = gui.MainWindow()
+        window.toggle_app_signal.connect(lambda: _worker.set_enabled(window.app_enabled))
+        window.hotkeys_changed_signal.connect(_worker.setup_hotkeys)
+        
+        # Connect auto/manual mode toggle from GUI
+        if hasattr(window, 'mode_changed_signal'):
+            window.mode_changed_signal.connect(lambda auto: setattr(_worker, 'auto_mode', auto))
+        
+        window.show()
+        
+        _worker.start()
+        
+        # Game detector in background thread
+        game_detector.start(on_change_callback=lambda is_fs: _worker.set_enabled(not is_fs and window.app_enabled))
+        
+        try:
+            ret = app.exec()
+            sys.exit(ret)
+        except Exception as e:
+            raise
+    except Exception as e:
+        import traceback
+        with open("crash2.txt", "w", encoding="utf-8") as f:
+            f.write(traceback.format_exc())
+        raise
 
 if __name__ == "__main__":
+    print("BEFORE MAIN", flush=True)
     main()
+    print("AFTER MAIN", flush=True)
