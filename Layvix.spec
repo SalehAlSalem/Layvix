@@ -7,11 +7,9 @@ a = Analysis(
     binaries=[],
     datas=[
         ('layvix_ai.pkl', '.'),
-        ('settings.json', '.'),
         ('icon.ico', '.'),
         ('ar_words.txt', '.'),
         ('en_words.txt', '.'),
-        ('user_dict.json', '.'),
     ],
     hiddenimports=[
         'sklearn.utils._cython_blas',
