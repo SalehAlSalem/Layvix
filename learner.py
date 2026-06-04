@@ -13,13 +13,15 @@ import pickle
 import time
 import threading
 import numpy as np
-from logger import get_logger
+from logger import get_logger, get_data_dir
+import settings
 
 logger = get_logger()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LEARNING_LOG_PATH = os.path.join(BASE_DIR, 'learning_log.json')
-MODEL_PATH = os.path.join(BASE_DIR, 'layvix_ai.pkl')
+LEARNING_LOG_PATH = os.path.join(get_data_dir(), 'learning_log.json')
+LEARNING_STATS_PATH = os.path.join(get_data_dir(), 'learner_stats.json')
+PERSONAL_MODEL_PATH = os.path.join(get_data_dir(), 'layvix_ai_personal.pkl')
 
 _vectorizer = None
 _classifier = None
@@ -35,6 +37,25 @@ _learn_stats = {
     "manual_corrections": 0,
 }
 
+def _load_stats():
+    global _learn_stats
+    import json
+    if os.path.exists(LEARNING_STATS_PATH):
+        try:
+            with open(LEARNING_STATS_PATH, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+                for k, v in loaded.items():
+                    _learn_stats[k] = v
+        except Exception as e:
+            logger.error(f"Failed to load learner stats: {e}")
+
+def _save_stats():
+    import json
+    try:
+        with open(LEARNING_STATS_PATH, 'w', encoding='utf-8') as f:
+            json.dump(_learn_stats, f, indent=4)
+    except Exception as e:
+        logger.error(f"Failed to save learner stats: {e}")
 
 def init(vectorizer, classifier):
     """Initialize with the loaded model components."""
@@ -48,6 +69,7 @@ def init(vectorizer, classifier):
     if hasattr(_classifier, 'class_weight'):
         _classifier.class_weight = None
         
+    _load_stats()
     logger.info("[LEARNER] Online learning engine initialized")
 
 
@@ -84,6 +106,7 @@ def learn_from_undo(word_str, was_predicted_layout):
             _learn_stats["learned_today"] += 1
             _learn_stats["corrections_undone"] += 1
             _learn_stats["last_learn_time"] = time.strftime("%H:%M:%S")
+            _save_stats()
 
             layout_name = 'English' if correct_label == 0 else 'Arabic'
             logger.info(f"[LEARN] Undo → '{word_str}' is actually {layout_name} (reinforced 20x)")
@@ -121,6 +144,7 @@ def learn_from_manual(word_str, from_layout, to_layout):
             _learn_stats["learned_today"] += 1
             _learn_stats["manual_corrections"] += 1
             _learn_stats["last_learn_time"] = time.strftime("%H:%M:%S")
+            _save_stats()
 
             logger.info(f"[LEARN] Manual → '{word_str}' should be {to_layout} (reinforced 30x)")
 
@@ -159,17 +183,69 @@ def learn_from_accepted(word_str, predicted_layout):
 
 
 def _save_model():
-    """Save the updated model to disk."""
+    """Save the updated personal model to disk."""
+    if not settings.get_setting("use_personal_model"):
+        return # Do not save if personal model is not enabled
+        
     try:
-        import ai_engine
         data = {
             'vectorizer': _vectorizer,
             'classifier': _classifier,
-            'version': '3.1-live',
+            'version': '3.4-personal',
             'n_training_samples': 'online',
             'n_features': _vectorizer.get_feature_names_out().shape[0] if hasattr(_vectorizer, 'get_feature_names_out') else '?',
         }
-        with open(MODEL_PATH, 'wb') as f:
+        with open(PERSONAL_MODEL_PATH, 'wb') as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception as e:
         logger.error(f"[LEARN] Error saving model: {e}")
+
+def fine_tune_with_dictionary():
+    """Batch fine-tune the personal model using user_dict.json"""
+    import user_dictionary
+    if _vectorizer is None or _classifier is None:
+        return False
+        
+    custom_words = user_dictionary.user_dict
+    if not custom_words:
+        return False
+        
+    with _lock:
+        try:
+            X_words = []
+            y_labels = []
+            
+            for wrong, correct in custom_words.items():
+                # We want the model to predict 'correct' layout for 'wrong' input
+                # Normally, if correct layout is Arabic (ar), label is 1, else 0
+                import re
+                has_arabic = bool(re.search(r'[\u0600-\u06FF]', correct))
+                label = 1 if has_arabic else 0
+                
+                X_words.append(wrong.lower())
+                y_labels.append(label)
+                
+            if not X_words:
+                return False
+                
+            vecs = _vectorizer.transform(X_words)
+            y_batch = np.array(y_labels)
+            
+            _classifier.class_weight = None
+            if hasattr(_classifier, '_expanded_class_weight'):
+                delattr(_classifier, '_expanded_class_weight')
+                
+            # Strong reinforcement for explicit dictionary overrides
+            for _ in range(50):
+                _classifier.partial_fit(vecs, y_batch, classes=np.array([0, 1]))
+                
+            _learn_stats["total_learned"] += len(X_words)
+            _learn_stats["last_learn_time"] = time.strftime("%H:%M:%S")
+            _save_stats()
+            
+            _save_model()
+            logger.info(f"[LEARN] Successfully fine-tuned on {len(X_words)} dictionary words.")
+            return True
+        except Exception as e:
+            logger.error(f"[LEARN] Error in fine-tuning: {e}")
+            return False

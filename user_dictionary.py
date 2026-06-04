@@ -39,6 +39,9 @@ def add_correction(wrong, correct):
 def get_correction(word):
     return user_dict.get(word)
 
+def get_custom_words():
+    """Returns a list of strings representing the custom words and their corrections"""
+    return [f"{k} ➔ {v}" for k, v in user_dict.items()]
 
 # Initialize
 load_user_dict()

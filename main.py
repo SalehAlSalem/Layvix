@@ -3,10 +3,14 @@ import os
 import ctypes
 import pynput.keyboard
 import mouse
+import numpy as np
+import sklearn # Explicit import required for PyInstaller to pack it
+import pickle
 import time
 import threading
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtGui import QIcon
 
 import settings
 import user_dictionary
@@ -25,10 +29,24 @@ from plyer import notification
 logger = get_logger()
 
 # Global stats
-_stats = settings.get_setting("stats")
+_stats = settings.get_setting("stats") or {"corrections_today": 0, "total_corrections": 0, "words_learned": 0}
+
+# Ensure all keys exist
+for key in ["corrections_today", "total_corrections", "words_learned"]:
+    if key not in _stats:
+        _stats[key] = 0
+
+# Daily reset: if today's date is different from last saved date, reset today's counter
+import datetime
+_today = datetime.date.today().isoformat()
+_last_date = settings.get_setting("stats_date")
+if _last_date != _today:
+    _stats["corrections_today"] = 0
+    settings.set_setting("stats_date", _today)
 
 def save_stats():
     settings.set_setting("stats", _stats)
+
 
 class CoreWorker(QThread):
     def __init__(self):
@@ -43,7 +61,16 @@ class CoreWorker(QThread):
         self.listener = None
         self.auto_mode = True  # True = auto correct, False = manual only
         self.last_typed_word = ""
+        
+        # Monitor mouse clicks to clear buffers (preventing blind backspaces)
+        import mouse
+        try:
+            mouse.hook(self.on_mouse_event)
+        except Exception as e:
+            logger.error(f"Failed to hook mouse: {e}")
         self.last_manual_word = None
+        self.pending_short_word = None
+        self.pending_short_time = 0
         
     def run(self):
         import keyboard
@@ -102,14 +129,30 @@ class CoreWorker(QThread):
         old_clipboard = pyperclip.paste()
         pyperclip.copy('')  # Clear it temporarily
         
-        # Release modifiers just in case before sending Ctrl+C
-        for mod in ['ctrl', 'alt', 'shift', 'windows', 'right ctrl', 'right alt', 'right shift', 'left ctrl', 'left alt', 'left shift']:
-            if keyboard.is_pressed(mod):
-                keyboard.release(mod)
+        # Wait for user to physically release modifiers to avoid shortcut collision
+        modifiers = ['ctrl', 'alt', 'shift', 'windows', 'right ctrl', 'right alt', 'right shift', 'left ctrl', 'left alt', 'left shift']
+        timeout = time.time() + 2.0
+        while time.time() < timeout:
+            if not any(keyboard.is_pressed(m) for m in modifiers):
+                break
+            time.sleep(0.05)
+            
+        import ctypes
+        user32 = ctypes.windll.user32
+        
+        # Force software release of modifiers
+        for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C]: # Shift, Ctrl, Alt, LWin, RWin
+            user32.keybd_event(vk, 0, 2, 0) # 2 is KEYUP
         time.sleep(0.05)
         
-        keyboard.send('ctrl+c')
-        time.sleep(0.1) # Wait for OS to copy
+        # Send clean Ctrl+C via user32
+        user32.keybd_event(0x11, 0, 0, 0) # Ctrl down
+        user32.keybd_event(0x43, 0, 0, 0) # C down
+        time.sleep(0.02)
+        user32.keybd_event(0x43, 0, 2, 0) # C up
+        user32.keybd_event(0x11, 0, 2, 0) # Ctrl up
+        
+        time.sleep(0.2) # Wait longer for OS to copy to clipboard
         
         selected_text = pyperclip.paste()
         is_selection = bool(selected_text.strip())
@@ -125,6 +168,11 @@ class CoreWorker(QThread):
                 word_str = self.last_typed_word
                 
             if not word_str:
+                try:
+                    from plyer import notification
+                    notification.notify(title="تنبيه ⚠️", message="يرجى تحديد (تظليل) الكلمة التي تريد تصحيحها أولاً.", app_name="Layvix", timeout=3)
+                except:
+                    pass
                 return
                 
             self.current_word.clear()
@@ -145,8 +193,26 @@ class CoreWorker(QThread):
         logger.info(f"[MANUAL] User forced correction for '{word_str}' \u2192 '{corrected}' (selection: {is_selection})")
         self.do_correction(word_str, corrected, switch=True, predicted_layout=target_layout, is_selection=is_selection)
         
-        # LEARN: user manually corrected -> teach AI the correct layout
-        learner.learn_from_manual(convert_word(word_str, 'ar_to_en') if is_arabic else word_str, 'ar' if is_arabic else 'en', target_layout)
+        # SMART LEARNING: Split sentence into words and learn them individually
+        original_words = word_str.split()
+        corrected_words = corrected.split()
+        
+        for w_wrong, w_right in zip(original_words, corrected_words):
+            # Learn in AI model
+            w_is_arabic = any('\u0600' <= c <= '\u06FF' for c in w_wrong)
+            learner.learn_from_manual(convert_word(w_wrong, 'ar_to_en') if w_is_arabic else w_wrong, 'ar' if w_is_arabic else 'en', target_layout)
+            
+            # Add to explicit User Dictionary to enforce it immediately
+            user_dictionary.add_correction(w_wrong, w_right)
+
+    def on_mouse_event(self, event):
+        # If the user clicks the mouse, they moved the cursor.
+        # We must clear the typing buffers so we don't blindly send backspaces to the wrong place.
+        import mouse
+        if isinstance(event, mouse.ButtonEvent) and event.event_type == 'down':
+            self.current_word.clear()
+            self.last_typed_word = ""
+            self.pending_short_word = None
 
     def on_key_event(self, event):
         if event.event_type == 'up':
@@ -178,8 +244,11 @@ class CoreWorker(QThread):
             elif name == 'backspace':
                 if self.current_word:
                     self.current_word.pop()
+                else:
+                    self.pending_short_word = None
             elif name == 'enter':
                 self.current_word.clear()
+                self.pending_short_word = None
             elif name == 'shift':
                 self.shift_pressed = True
         except:
@@ -257,6 +326,10 @@ class CoreWorker(QThread):
             logger.info(f"[SKIP] excluded app: {active_exe}")
             return
             
+        lang_id = get_current_language()
+        current_layout = 'ar' if lang_id == 1 else 'en'
+        self.last_typed_word = word_str
+            
         # Check user overrides first
         user_correction = user_dictionary.get_correction(word_str)
         if user_correction:
@@ -264,14 +337,18 @@ class CoreWorker(QThread):
                 self.do_correction(word_str, user_correction)
             return
         
-        # Skip very short words (1-2 chars) — too ambiguous
-        if len(word_str) < 3:
-            logger.info(f"[SKIP] too short: '{word_str}'")
+        # Skip very short words based on setting (Save for retroactive)
+        min_len = int(settings.get_setting("min_word_length") or 2)
+        if len(word_str) < min_len:
+            logger.info(f"[SKIP] too short: '{word_str}' (Saved for retroactive analysis)")
+            self.pending_short_word = word_str
+            self.pending_short_layout = current_layout
+            self.pending_short_time = time.time()
             return
             
-        self.last_typed_word = word_str
-        lang_id = get_current_language()
-        current_layout = 'ar' if lang_id == 1 else 'en'
+        # Clear pending short word if it's older than 2.5 seconds
+        if self.pending_short_word and (time.time() - self.pending_short_time > 2.5):
+            self.pending_short_word = None
         
         is_arabic = any('\u0600' <= c <= '\u06FF' for c in word_str)
         
@@ -284,9 +361,13 @@ class CoreWorker(QThread):
         predicted_layout, confidence = ai_engine.predict_layout(test_word)
         logger.info(f"[AI] '{word_str}' (test='{test_word}') \u2192 predicted={predicted_layout} conf={confidence:.2%} current={current_layout}")
         
-        # Only correct if AI is confident enough (> 75%)
-        if confidence < 0.75 or predicted_layout == 'unknown':
-            logger.info(f"[SKIP] low confidence or unknown")
+        # Only correct if AI is confident enough
+        threshold = float(settings.get_setting("ai_confidence_threshold") or settings.get_setting("confidence_threshold") or 0.85)
+        if confidence < threshold or predicted_layout == 'unknown':
+            logger.info(f"[SKIP] low confidence or unknown (Saved for retroactive analysis)")
+            self.pending_short_word = word_str
+            self.pending_short_layout = current_layout
+            self.pending_short_time = time.time()
             return
             
         # If AI says this word belongs to a different layout than current
@@ -295,13 +376,59 @@ class CoreWorker(QThread):
                 corrected = convert_word(word_str, 'en_to_ar')
             else:
                 corrected = convert_word(word_str, 'ar_to_en')
+                
+            # --- RETROACTIVE CORRECTION TRIGGER ---
+            retro_enabled = settings.get_setting("retroactive_correction")
+            if retro_enabled is None: retro_enabled = True
             
+            if self.pending_short_word and retro_enabled:
+                prev_word = self.pending_short_word
+                if current_layout == 'en':
+                    prev_corrected = convert_word(prev_word, 'en_to_ar')
+                else:
+                    prev_corrected = convert_word(prev_word, 'ar_to_en')
+                    
+                combined_wrong = prev_word + " " + word_str
+                combined_correct = prev_corrected + " " + corrected
+                
+                logger.info(f"[RETROACTIVE] Correcting past short word: '{combined_wrong}' -> '{combined_correct}'")
+                self.pending_short_word = None
+                
+                if self.auto_mode:
+                    self.do_correction(combined_wrong, combined_correct, switch=True, predicted_layout=predicted_layout)
+                return
+            # ----------------------------------------
+            
+            self.pending_short_word = None
             if self.auto_mode:
                 logger.info(f"[CORRECT] '{word_str}' → '{corrected}' (auto)")
                 self.do_correction(word_str, corrected, switch=True, predicted_layout=predicted_layout)
             else:
                 logger.info(f"[MANUAL MODE] would correct '{word_str}' → '{corrected}' but auto is off")
         else:
+            retro_enabled = settings.get_setting("retroactive_correction")
+            if retro_enabled is None: retro_enabled = True
+            
+            if self.pending_short_word and retro_enabled and hasattr(self, 'pending_short_layout') and self.pending_short_layout != current_layout:
+                prev_word = self.pending_short_word
+                if self.pending_short_layout == 'en':
+                    prev_corrected = convert_word(prev_word, 'en_to_ar')
+                else:
+                    prev_corrected = convert_word(prev_word, 'ar_to_en')
+                    
+                prev_test_word = convert_word(prev_word, 'ar_to_en') if any('\u0600' <= c <= '\u06FF' for c in prev_word) else prev_word
+                prev_pred, prev_conf = ai_engine.predict_layout(prev_test_word)
+                
+                if prev_pred == current_layout and prev_conf >= threshold:
+                    combined_wrong = prev_word + " " + word_str
+                    combined_correct = prev_corrected + " " + word_str
+                    logger.info(f"[RETROACTIVE] Manual Switch detected! Correcting past short word: '{combined_wrong}' -> '{combined_correct}'")
+                    self.pending_short_word = None
+                    if self.auto_mode:
+                        self.do_correction(combined_wrong, combined_correct, switch=False, predicted_layout=predicted_layout)
+                    return
+                    
+            self.pending_short_word = None
             logger.info(f"[OK] same layout, no correction needed")
             
     def do_correction(self, wrong, correct, switch=True, predicted_layout='ar', is_selection=False):
@@ -321,6 +448,9 @@ class CoreWorker(QThread):
                 break
             time.sleep(0.05)
             
+        # Force software release of modifiers
+        for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C]:
+            user32.keybd_event(vk, 0, 2, 0)
         time.sleep(0.05)
         
         KEYEVENTF_SCANCODE = 0x0008
@@ -401,6 +531,12 @@ def main():
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)
         
+        # Set Official App Icon (Octopus)
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(base_dir, "icon.ico")
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+        
         global _worker
         _worker = CoreWorker()
         window = gui.MainWindow()
@@ -410,6 +546,15 @@ def main():
         # Connect auto/manual mode toggle from GUI
         if hasattr(window, 'mode_changed_signal'):
             window.mode_changed_signal.connect(lambda auto: setattr(_worker, 'auto_mode', auto))
+            
+        # Initialize Floating Bubble
+        from floating_bubble import FloatingBubble
+        bubble = FloatingBubble(_worker)
+        if settings.get_setting("show_floating_bubble"):
+            bubble.show()
+        
+        # We need to keep a reference to the bubble so it isn't garbage collected
+        app.bubble = bubble
         
         window.show()
         

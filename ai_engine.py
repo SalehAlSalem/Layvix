@@ -8,7 +8,9 @@ Integrates with learner.py for continuous online learning.
 import os
 import pickle
 import numpy as np
-from logger import get_logger
+import shutil
+from logger import get_logger, get_data_dir
+import settings
 
 logger = get_logger()
 
@@ -17,14 +19,32 @@ _vectorizer = None
 
 
 def load_model():
-    """Load the trained AI model from disk."""
+    """Load the trained AI model from disk (Base or Personal)."""
     global _model, _vectorizer
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(base_dir, 'layvix_ai.pkl')
+    base_model_path = os.path.join(base_dir, 'layvix_ai.pkl')
+    personal_model_path = os.path.join(get_data_dir(), 'layvix_ai_personal.pkl')
+    
+    use_personal = settings.get_setting("use_personal_model")
+    
+    if use_personal:
+        # If personal model doesn't exist, create it by copying the base model
+        if not os.path.exists(personal_model_path):
+            if os.path.exists(base_model_path):
+                shutil.copy2(base_model_path, personal_model_path)
+                logger.info("Created new Personal AI Model from Base Model.")
+            else:
+                logger.error("Base AI model not found to create Personal Model!")
+                return False
+        model_path = personal_model_path
+        logger.info("Loading Personal AI Model...")
+    else:
+        model_path = base_model_path
+        logger.info("Loading Base AI Model...")
 
     if not os.path.exists(model_path):
-        logger.error(f"AI model not found: {model_path}. Run train_ai.py first!")
+        logger.error(f"AI model not found: {model_path}")
         return False
 
     try:
