@@ -10,3 +10,5 @@ scikit-learn
 numpy
 scipy
 pywin32
+
+mouse
