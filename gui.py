@@ -21,7 +21,7 @@ import user_dictionary
 import learner
 from i18n import t, set_language
 
-VERSION = "3.4.3"
+VERSION = "3.4.4"
 
 # --- Theme & Colors ---
 class Theme:

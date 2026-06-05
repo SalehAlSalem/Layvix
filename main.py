@@ -267,9 +267,10 @@ class CoreWorker(QThread):
         KEYEVENTF_KEYUP = 0x0002
         last = self.undo_history.pop()
         if time.time() - last['time'] < 30:
+            import keyboard
             for _ in range(len(last['correct']) + 1):
-                user32.keybd_event(0, 0x0E, KEYEVENTF_SCANCODE, 0)
-                user32.keybd_event(0, 0x0E, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                keyboard.send('backspace')
+                time.sleep(0.01)
             
             if last.get('switched', True):
                 switch_language()
@@ -458,8 +459,8 @@ class CoreWorker(QThread):
         
         if not is_selection:
             for _ in range(len(wrong) + 1):
-                user32.keybd_event(0, 0x0E, KEYEVENTF_SCANCODE, 0)
-                user32.keybd_event(0, 0x0E, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                keyboard.send('backspace')
+                time.sleep(0.01)
             
         if switch:
             switch_language()
