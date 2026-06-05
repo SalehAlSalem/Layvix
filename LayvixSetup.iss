@@ -1,6 +1,6 @@
 [Setup]
 AppName=Layvix
-AppVersion=3.4.2
+AppVersion=3.4.3
 DefaultDirName={autopf}\Layvix
 DefaultGroupName=Layvix
 OutputDir=installer
