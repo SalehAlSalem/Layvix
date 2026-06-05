@@ -259,6 +259,11 @@ class CoreWorker(QThread):
             return
             
         self.is_correcting = True
+        
+        # Capture extra keys typed by the user to prevent backspace absorption
+        extra_keys = list(self.current_word)
+        self.current_word.clear()
+        
         user32 = ctypes.windll.user32
         for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C]:
             user32.keybd_event(vk, 0, 2, 0)
@@ -268,7 +273,8 @@ class CoreWorker(QThread):
         last = self.undo_history.pop()
         if time.time() - last['time'] < 30:
             import keyboard
-            for _ in range(len(last['correct']) + 1):
+            total_backspaces = len(last['correct']) + 1 + len(extra_keys)
+            for _ in range(total_backspaces):
                 keyboard.send('backspace')
                 time.sleep(0.01)
             
@@ -298,6 +304,14 @@ class CoreWorker(QThread):
                         pyperclip.copy(old_cb)
                     except:
                         pass
+                        
+            # Replay extra keys
+            if extra_keys:
+                time.sleep(0.02)
+                for key in extra_keys:
+                    keyboard.send(key)
+                    time.sleep(0.01)
+                    self.current_word.append(key)
             
             user_dictionary.add_correction(last['wrong'], last['wrong'])
             _stats["words_learned"] += 1
@@ -434,6 +448,11 @@ class CoreWorker(QThread):
             
     def do_correction(self, wrong, correct, switch=True, predicted_layout='ar', is_selection=False):
         self.is_correcting = True
+        
+        # Capture keystrokes that user typed while AI was thinking to prevent them from absorbing backspaces
+        extra_keys = list(self.current_word)
+        self.current_word.clear()
+        
         self.undo_history.append({'time': time.time(), 'wrong': wrong, 'correct': correct, 'switched': switch, 'predicted_layout': predicted_layout})
         if len(self.undo_history) > 50: self.undo_history.pop(0)
         
@@ -458,7 +477,8 @@ class CoreWorker(QThread):
         KEYEVENTF_KEYUP = 0x0002
         
         if not is_selection:
-            for _ in range(len(wrong) + 1):
+            total_backspaces = len(wrong) + 1 + len(extra_keys)
+            for _ in range(total_backspaces):
                 keyboard.send('backspace')
                 time.sleep(0.01)
             
@@ -466,7 +486,6 @@ class CoreWorker(QThread):
             switch_language()
             time.sleep(0.05)
         
-        import pyperclip
         old_cb = ""
         try:
             old_cb = pyperclip.paste()
@@ -488,6 +507,14 @@ class CoreWorker(QThread):
                     pyperclip.copy(old_cb)
                 except:
                     pass
+                    
+        # Re-play the extra keys that were typed
+        if extra_keys and not is_selection:
+            time.sleep(0.02)
+            for key in extra_keys:
+                keyboard.send(key)
+                time.sleep(0.01)
+                self.current_word.append(key)
         
         _stats["corrections_today"] += 1
         _stats["total_corrections"] += 1
