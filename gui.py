@@ -21,28 +21,28 @@ import user_dictionary
 import learner
 from i18n import t, set_language
 
-VERSION = "3.4.5"
+VERSION = "1.0.0"
 
 # --- Theme & Colors ---
 class Theme:
-    BG_BASE = "#0F0F13"
-    BG_CARD = "#1C1C24"
-    BG_CARD_HOVER = "#252530"
+    BG_BASE = "#0B1320"      # Dark navy blue background from logo
+    BG_CARD = "#121C2F"      # Lighter navy for cards
+    BG_CARD_HOVER = "#18253B" # Slightly lighter for hover
     
-    PRIMARY = "#6C5CE7"
-    PRIMARY_HOVER = "#8275E9"
-    PRIMARY_GLOW = "rgba(108, 92, 231, 0.4)"
+    PRIMARY = "#48C9B0"      # Bright Teal/Cyan from the octopus
+    PRIMARY_HOVER = "#5BD6C0" # Lighter cyan for hover
+    PRIMARY_GLOW = "rgba(72, 201, 176, 0.4)"
     
-    ACCENT = "#00D2D3"
-    ACCENT_GLOW = "rgba(0, 210, 211, 0.4)"
+    ACCENT = "#2BDDBE"       # Vibrant cyan accent
+    ACCENT_GLOW = "rgba(43, 221, 190, 0.4)"
     
     TEXT_MAIN = "#FFFFFF"
-    TEXT_MUTED = "#A0A0B0"
+    TEXT_MUTED = "#87A0B3"   # Bluish gray for muted text
     
-    DANGER = "#FF7675"
-    SUCCESS = "#55EFC4"
+    DANGER = "#FF6B6B"
+    SUCCESS = "#48C9B0"      # Matching primary for success
 
-    BORDER = "#2D2D3A"
+    BORDER = "#1E2C42"       # Navy border
     
     FONT_FAMILY = "Segoe UI"
 
@@ -876,7 +876,7 @@ class MainWindow(QWidget):
                     
                 # Clear dictionary
                 user_dictionary.user_dict.clear()
-                user_dictionary._save()
+                user_dictionary.save_user_dict()
                 
                 # Re-init learner
                 learner.init_engine()
@@ -938,10 +938,67 @@ class MainWindow(QWidget):
             wrong = item.data(Qt.ItemDataRole.UserRole)
             if wrong and wrong in user_dictionary.user_dict:
                 del user_dictionary.user_dict[wrong]
-                user_dictionary._save()
+                user_dictionary.save_user_dict()
                 refresh_list()
                 
         del_btn.clicked.connect(delete_selected)
+
+        edit_btn = QPushButton("تعديل المحدد")
+        edit_btn.setFixedHeight(40)
+        edit_btn.setStyleSheet(f"QPushButton {{ background: {Theme.ACCENT}; color: white; border-radius: 8px; font-weight: bold; font-size: 14px; }} QPushButton:hover {{ background: {Theme.PRIMARY}; }}")
+
+        def edit_selected():
+            selected = list_widget.selectedItems()
+            if not selected: return
+            item = selected[0]
+            wrong = item.data(Qt.ItemDataRole.UserRole)
+            if not wrong or wrong not in user_dictionary.user_dict:
+                return
+
+            current_right = user_dictionary.user_dict[wrong]
+
+            edit_dialog = QDialog(dialog)
+            edit_dialog.setWindowTitle("تعديل الكلمة")
+            edit_dialog.setFixedSize(400, 200)
+            edit_dialog.setStyleSheet(f"QDialog {{ background-color: {Theme.BG_BASE}; color: {Theme.TEXT_MAIN}; }}")
+            el = QVBoxLayout(edit_dialog)
+            el.setContentsMargins(20, 20, 20, 20)
+            el.setSpacing(12)
+
+            lbl_wrong = QLabel(f"الكلمة الخاطئة: {wrong}")
+            lbl_wrong.setStyleSheet(f"color: {Theme.DANGER}; font-size: 14px; font-weight: bold;")
+            el.addWidget(lbl_wrong)
+
+            right_input = QLineEdit(current_right)
+            right_input.setPlaceholderText("الكلمة الصحيحة...")
+            right_input.setStyleSheet(f"QLineEdit {{ background: {Theme.BG_CARD}; color: {Theme.TEXT_MAIN}; border: 1px solid {Theme.BORDER}; border-radius: 8px; padding: 8px; font-size: 14px; }}")
+            right_input.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            el.addWidget(right_input)
+
+            btn_row = QHBoxLayout()
+            save_e = QPushButton("حفظ")
+            save_e.setFixedHeight(36)
+            save_e.setStyleSheet(f"QPushButton {{ background: {Theme.PRIMARY}; color: white; border-radius: 6px; font-weight: bold; }}")
+            cancel_e = QPushButton("إلغاء")
+            cancel_e.setFixedHeight(36)
+            cancel_e.setStyleSheet(f"QPushButton {{ background: {Theme.BG_CARD}; color: {Theme.TEXT_MUTED}; border-radius: 6px; font-weight: bold; }}")
+            btn_row.addWidget(save_e)
+            btn_row.addWidget(cancel_e)
+            el.addLayout(btn_row)
+
+            def do_save():
+                new_right = right_input.text().strip()
+                if new_right:
+                    user_dictionary.user_dict[wrong] = new_right
+                    user_dictionary.save_user_dict()
+                    refresh_list()
+                edit_dialog.accept()
+
+            save_e.clicked.connect(do_save)
+            cancel_e.clicked.connect(edit_dialog.reject)
+            edit_dialog.exec()
+
+        edit_btn.clicked.connect(edit_selected)
         
         close_btn = QPushButton("إغلاق")
         close_btn.setFixedHeight(40)

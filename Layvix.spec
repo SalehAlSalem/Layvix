@@ -1,5 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+
+# Collect ALL submodules so nothing gets missed
+hidden = []
+hidden += collect_submodules('pynput')
+hidden += collect_submodules('mouse')
+hidden += collect_submodules('plyer')
+hidden += collect_submodules('sklearn')
+hidden += collect_submodules('scipy')
+hidden += collect_submodules('keyboard')
+hidden += collect_submodules('pyperclip')
+hidden += collect_submodules('pywin32')
+
+datas_extra = []
+datas_extra += collect_data_files('sklearn')
+datas_extra += collect_data_files('scipy')
 
 a = Analysis(
     ['main.py'],
@@ -8,23 +24,11 @@ a = Analysis(
     datas=[
         ('layvix_ai.pkl', '.'),
         ('icon.ico', '.'),
+        ('icon.svg', '.'),
         ('ar_words.txt', '.'),
         ('en_words.txt', '.'),
-    ],
-    hiddenimports=[
-        'sklearn.utils._cython_blas',
-        'sklearn.neighbors.typedefs',
-        'sklearn.neighbors._partition_nodes',
-        'sklearn.tree._utils',
-        'scipy.sparse._sparsetools',
-        'mouse._winmouse',
-        'pynput.keyboard._win32',
-        'pynput.mouse._win32',
-        'plyer.platforms.win.notification',
-        'sklearn.feature_extraction.text',
-        'sklearn.linear_model',
-        'sklearn.linear_model._stochastic_gradient',
-    ],
+    ] + datas_extra,
+    hiddenimports=hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

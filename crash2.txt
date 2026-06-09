@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "C:\Users\USER\.gemini\antigravity\scratch\AutoLayoutFixer\main.py", line 409, in main
+    window = gui.MainWindow()
+  File "C:\Users\USER\.gemini\antigravity\scratch\AutoLayoutFixer\gui.py", line 407, in __init__
+    self._build_ui()
+    ~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\.gemini\antigravity\scratch\AutoLayoutFixer\gui.py", line 477, in _build_ui
+    builder(page)
+    ~~~~~~~^^^^^^
+  File "C:\Users\USER\.gemini\antigravity\scratch\AutoLayoutFixer\gui.py", line 742, in _page_settings
+    self.conf_slider.setValue(int(float(settings.get_setting("confidence_threshold") or 0.85) * 100))
+                                        ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\.gemini\antigravity\scratch\AutoLayoutFixer\settings.py", line 54, in get_setting
+    val = DEFAULT_CONFIG.get(key)
+          ^^^^^^^^^^^^^^
+NameError: name 'DEFAULT_CONFIG' is not defined

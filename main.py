@@ -402,15 +402,22 @@ class CoreWorker(QThread):
                     prev_corrected = convert_word(prev_word, 'en_to_ar')
                 else:
                     prev_corrected = convert_word(prev_word, 'ar_to_en')
-                    
-                combined_wrong = prev_word + " " + word_str
-                combined_correct = prev_corrected + " " + corrected
                 
-                logger.info(f"[RETROACTIVE] Correcting past short word: '{combined_wrong}' -> '{combined_correct}'")
                 self.pending_short_word = None
+                logger.info(f"[RETROACTIVE] Correcting past short word: '{prev_word}' -> '{prev_corrected}'")
+                logger.info(f"[CORRECT] Current word: '{word_str}' -> '{corrected}'")
                 
                 if self.auto_mode:
-                    self.do_correction(combined_wrong, combined_correct, switch=True, predicted_layout=predicted_layout)
+                    # First: go back and correct the previous short word (it's sitting before the current cursor)
+                    # The cursor is at: ...prev_word[SPACE]current_word[SPACE]
+                    # We need to go back: len(current_word)+1 (for space after current) + len(prev_word)+1 (for space after prev)
+                    # Then retype: prev_corrected + SPACE + corrected + SPACE
+                    self.do_correction(
+                        prev_word + " " + word_str,
+                        prev_corrected + " " + corrected,
+                        switch=True,
+                        predicted_layout=predicted_layout
+                    )
                 return
             # ----------------------------------------
             
@@ -435,12 +442,17 @@ class CoreWorker(QThread):
                 prev_pred, prev_conf = ai_engine.predict_layout(prev_test_word)
                 
                 if prev_pred == current_layout and prev_conf >= threshold:
-                    combined_wrong = prev_word + " " + word_str
-                    combined_correct = prev_corrected + " " + word_str
-                    logger.info(f"[RETROACTIVE] Manual Switch detected! Correcting past short word: '{combined_wrong}' -> '{combined_correct}'")
                     self.pending_short_word = None
+                    logger.info(f"[RETROACTIVE] Manual Switch: correcting past short word '{prev_word}' -> '{prev_corrected}'")
                     if self.auto_mode:
-                        self.do_correction(combined_wrong, combined_correct, switch=False, predicted_layout=predicted_layout)
+                        # Cursor is at: ...prev_word[SPACE]current_word[SPACE]
+                        # Correct only the previous word, current word is already correct
+                        self.do_correction(
+                            prev_word + " " + word_str,
+                            prev_corrected + " " + word_str,
+                            switch=False,
+                            predicted_layout=predicted_layout
+                        )
                     return
                     
             self.pending_short_word = None

@@ -16,8 +16,14 @@ class FloatingBubble(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         
-        self.label = QLabel("🐙")
+        self.label = QLabel()
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.icon_path = os.path.join(base_dir, "icon.svg")
+        if not os.path.exists(self.icon_path):
+            self.icon_path = os.path.join(base_dir, "icon.ico")
+            
         self._set_active_style()
         self.layout.addWidget(self.label)
         
@@ -38,42 +44,85 @@ class FloatingBubble(QWidget):
         
     def _set_active_style(self):
         sz = getattr(self, 'current_size', 70)
-        font_sz = int(sz * 0.5)
         rad = int(sz / 2)
         
-        self.label.setText("🐙")
+        from PyQt6.QtGui import QPixmap, QPainter, QPainterPath
+        from PyQt6.QtCore import Qt
+        
+        pixmap = QPixmap(self.icon_path)
+        if not pixmap.isNull():
+            target = QPixmap(sz, sz)
+            target.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(target)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            path = QPainterPath()
+            path.addEllipse(0, 0, sz, sz)
+            painter.setClipPath(path)
+            scaled = pixmap.scaled(sz, sz, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            x = int((sz - scaled.width()) / 2)
+            y = int((sz - scaled.height()) / 2)
+            painter.drawPixmap(x, y, scaled)
+            painter.end()
+            self.label.setPixmap(target)
+        else:
+            self.label.setText("🐙")
+            
         self.label.setStyleSheet(f"""
             QLabel {{
-                background-color: rgba(20, 20, 30, 220);
+                background-color: rgba(11, 19, 32, 220);
                 color: white;
-                font-size: {font_sz}px;
+                font-size: {int(sz * 0.5)}px;
                 border-radius: {rad}px;
-                border: 2px solid rgba(138, 43, 226, 200);
+                border: 2px solid rgba(72, 201, 176, 200);
             }}
             QLabel:hover {{
-                background-color: rgba(40, 40, 50, 255);
-                border: 2px solid rgba(170, 80, 255, 255);
+                background-color: rgba(18, 28, 47, 255);
+                border: 2px solid rgba(91, 214, 192, 255);
             }}
         """)
         self.setToolTip("Layvix is RUNNING. Click to pause.")
 
     def _set_paused_style(self):
         sz = getattr(self, 'current_size', 70)
-        font_sz = int(sz * 0.5)
         rad = int(sz / 2)
         
-        self.label.setText("💤")
+        from PyQt6.QtGui import QPixmap, QPainter, QPainterPath
+        from PyQt6.QtCore import Qt
+        
+        pixmap = QPixmap(self.icon_path)
+        if not pixmap.isNull():
+            target = QPixmap(sz, sz)
+            target.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(target)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            path = QPainterPath()
+            path.addEllipse(0, 0, sz, sz)
+            painter.setClipPath(path)
+            
+            # Make it look "paused" by making it semi-transparent
+            painter.setOpacity(0.4)
+            scaled = pixmap.scaled(sz, sz, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            x = int((sz - scaled.width()) / 2)
+            y = int((sz - scaled.height()) / 2)
+            painter.drawPixmap(x, y, scaled)
+            painter.end()
+            self.label.setPixmap(target)
+        else:
+            self.label.setText("💤")
+            
         self.label.setStyleSheet(f"""
             QLabel {{
-                background-color: rgba(40, 10, 10, 220);
+                background-color: rgba(30, 10, 15, 220);
                 color: white;
-                font-size: {font_sz}px;
+                font-size: {int(sz * 0.5)}px;
                 border-radius: {rad}px;
-                border: 2px solid rgba(255, 50, 50, 200);
+                border: 2px solid rgba(255, 107, 107, 200);
             }}
             QLabel:hover {{
-                background-color: rgba(60, 20, 20, 255);
-                border: 2px solid rgba(255, 80, 80, 255);
+                background-color: rgba(45, 15, 20, 255);
+                border: 2px solid rgba(255, 130, 130, 255);
             }}
         """)
         self.setToolTip("Layvix is PAUSED. Click to resume.")
