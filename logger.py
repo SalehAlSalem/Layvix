@@ -2,8 +2,25 @@ import os
 import logging
 from logging.handlers import RotatingFileHandler
 
+import sys
+
 APP_NAME = "Layvix"
-LOG_DIR = os.path.join(os.environ.get("APPDATA", "."), APP_NAME)
+
+def _determine_data_dir():
+    # If running as a PyInstaller executable
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        # If 'portable.txt' exists next to the exe, use the exe's folder
+        if os.path.exists(os.path.join(exe_dir, "portable.txt")):
+            return exe_dir
+        # Otherwise, use AppData (standard for installed apps)
+        return os.path.join(os.environ.get("APPDATA", "."), APP_NAME)
+    else:
+        # If running as a Python script (Development mode)
+        # Use the script's directory so it doesn't mix with the installed/portable versions
+        return os.path.dirname(os.path.abspath(__file__))
+
+LOG_DIR = _determine_data_dir()
 LOG_FILE = os.path.join(LOG_DIR, "layvix.log")
 
 # Ensure log directory exists
