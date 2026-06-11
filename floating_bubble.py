@@ -31,8 +31,9 @@ class FloatingBubble(QWidget):
         self._start_pos = None
         self.is_paused = False
         
-        # Position top left initially to guarantee visibility on all monitor setups
-        self.move(100, 100)
+        saved_x = int(settings.get_setting("bubble_x") or 100)
+        saved_y = int(settings.get_setting("bubble_y") or 100)
+        self.move(saved_x, saved_y)
         
     def update_size(self, size):
         self.current_size = size
@@ -143,6 +144,10 @@ class FloatingBubble(QWidget):
             dist = (event.globalPosition().toPoint() - self._start_pos).manhattanLength()
             if dist < 5:  # It's a click, not a drag
                 self.toggle_pause()
+            else:
+                import settings
+                settings.set_setting("bubble_x", self.x())
+                settings.set_setting("bubble_y", self.y())
         self._drag_pos = None
         self._start_pos = None
 

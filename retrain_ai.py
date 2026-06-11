@@ -27,10 +27,16 @@ from mapper import convert_word
 # ⚙️ SETTINGS - Change these to improve accuracy
 # ============================================
 MAX_AR_WORDS = 50000        # Was 40,000 — now using ALL available Arabic words
-MAX_EN_WORDS = 10000        # English words
+MAX_EN_WORDS = 40000        # Balance English data with Arabic data
 NGRAM_RANGE = (2, 5)        # Was (2,4) — now captures longer patterns
 MAX_FEATURES = 80000        # Was 50,000 — more features = more detail
 MIN_WORD_LEN = 2            # Minimum word length to train on
+CUSTOM_BOOST = 10           # Lower boost to reduce overfitting
+SHORT_AR_WORDS = [
+    "في", "من", "على", "و", "يا", "ما", "لا", "لن", "عن", "أن",
+    "إن", "أو", "ثم", "هل", "قد", "كل", "مع", "هذا", "هذه", "ذلك",
+    "تلك", "هناك", "هنا", "اليوم", "أمس", "غدا", "قبل", "بعد", "عند", "بين"
+]
 # ============================================
 
 
@@ -106,8 +112,18 @@ def main():
 
     # Merge custom words (counted as Arabic, repeated for weight)
     if custom:
-        ar_on_en.extend(custom * 50)  # Repeat custom words to boost importance
-        print(f"  Custom words boosted: {len(custom)} × 50 = {len(custom) * 50}")
+        ar_on_en.extend(custom * CUSTOM_BOOST)
+        print(f"  Custom words boosted: {len(custom)} × {CUSTOM_BOOST} = {len(custom) * CUSTOM_BOOST}")
+
+    if SHORT_AR_WORDS:
+        short_boosted = []
+        for word in SHORT_AR_WORDS:
+            mapped = convert_word(word, 'ar_to_en')
+            if mapped and all(c.isascii() for c in mapped):
+                short_boosted.extend([mapped.lower()] * 20)
+        if short_boosted:
+            ar_on_en.extend(short_boosted)
+            print(f"  Short Arabic words boosted: {len(short_boosted):,}")
 
     # Build training set
     X = en_words + ar_on_en

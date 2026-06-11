@@ -356,6 +356,7 @@ class AIActivityWidget(QWidget):
     def update_sys_info(self):
         try:
             import settings, os, subprocess
+            from logger import get_data_dir as _get_data_dir
             
             # Throttle RAM check to avoid UI lag (update every 2 seconds instead of 500ms)
             if not hasattr(self, '_ram_tick'): self._ram_tick = 0
@@ -375,7 +376,7 @@ class AIActivityWidget(QWidget):
             
             model_type = "Layvix Pro (Personal)" if settings.get_setting("use_personal_model") else "Base AI Model"
             words_count = 0
-            dict_path = os.path.join(settings.get_data_dir(), "user_dict.json")
+            dict_path = os.path.join(_get_data_dir(), "user_dict.json")
             if os.path.exists(dict_path):
                 import json
                 with open(dict_path, 'r', encoding='utf-8') as f:
@@ -546,7 +547,7 @@ class MainWindow(QWidget):
             
         self.setStyleSheet(f"background-color: {Theme.BG_BASE}; color: {Theme.TEXT_MAIN};")
         self.resize(1000, 700)
-        self.app_enabled = True
+        self.app_enabled = settings.get_setting("app_enabled") is not False
         if settings.get_setting("language") == "ar" or not settings.get_setting("language"):
             self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         else:
@@ -760,6 +761,7 @@ class MainWindow(QWidget):
         
     def _on_master_toggle(self, checked):
         self.app_enabled = checked
+        settings.set_setting("app_enabled", checked)
         self.master_desc.setText(t("auto_desc_on") if checked else t("auto_desc_off"))
         self.master_desc.setStyleSheet(f"color: {Theme.PRIMARY if checked else Theme.TEXT_MUTED}; font-size: 13px;")
         self.toggle_app_signal.emit()
@@ -850,27 +852,30 @@ class MainWindow(QWidget):
             try:
                 import os
                 import learner
+                import ai_engine
                 import user_dictionary
+                from logger import get_data_dir
                 
                 # Clear learning log
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-                log_path = os.path.join(base_dir, 'learning_log.json')
+                log_path = learner.LEARNING_LOG_PATH
                 if os.path.exists(log_path):
                     os.remove(log_path)
                     
                 # Clear personal model
-                model_path = os.path.join(base_dir, 'personal_model.pkl')
+                model_path = learner.PERSONAL_MODEL_PATH
                 if os.path.exists(model_path):
                     os.remove(model_path)
                     
                 # Clear stats
-                learner._stats = {"total_learned": 0, "corrections_undone": 0, "manual_corrections": 0}
+                for key in ["total_learned", "learned_today", "corrections_accepted", "corrections_undone", "manual_corrections"]:
+                    learner._learn_stats[key] = 0
+                learner._learn_stats["last_learn_time"] = None
                 learner._save_stats()
                 
                 import sys
                 core_loop = sys.modules.get('__main__')
                 if core_loop and hasattr(core_loop, '_stats'):
-                    core_loop._stats = {"corrections_today": 0, "total_corrections": 0, "words_learned": 0, "last_date": ""}
+                    core_loop._stats = {"corrections_today": 0, "total_corrections": 0, "words_learned": 0}
                     if hasattr(core_loop, 'save_stats'):
                         core_loop.save_stats()
                     
@@ -879,7 +884,7 @@ class MainWindow(QWidget):
                 user_dictionary.save_user_dict()
                 
                 # Re-init learner
-                learner.init_engine()
+                ai_engine.load_model()
                 self._update_stats()
                 
                 sender = self.sender()
@@ -1006,6 +1011,7 @@ class MainWindow(QWidget):
         close_btn.clicked.connect(dialog.accept)
         
         btn_layout.addWidget(del_btn)
+        btn_layout.addWidget(edit_btn)
         btn_layout.addWidget(close_btn)
         
         d_layout.addLayout(btn_layout)

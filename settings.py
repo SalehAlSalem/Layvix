@@ -1,7 +1,7 @@
 import json
 import os
 import sys
-import winreg
+import copy
 from logger import get_logger, get_data_dir
 
 logger = get_logger()
@@ -13,13 +13,18 @@ DEFAULT_CONFIG = {
     "overlay_hotkey": "ctrl+alt+shift+a",
     "undo_hotkey": "ctrl+alt+shift+z",
     "manual_hotkey": "ctrl+alt+shift+s",
+    "app_enabled": True,
     "run_on_startup": False,
     "language": "ar",
     "excluded_apps": ["cmd.exe", "powershell.exe", "WindowsTerminal.exe"],
     "ai_confidence_threshold": 0.85,
-    "min_word_length": 3,
+    "min_word_length": 1,
     "retroactive_correction": True,
     "show_floating_bubble": True,
+    "use_personal_model": True,
+    "bubble_size": 70,
+    "bubble_x": 100,
+    "bubble_y": 100,
     "stats": {
         "corrections_today": 0,
         "total_corrections": 0,
@@ -27,10 +32,11 @@ DEFAULT_CONFIG = {
     }
 }
 
-config = DEFAULT_CONFIG.copy()
+config = copy.deepcopy(DEFAULT_CONFIG)
 
 def load_settings():
     global config
+    config = copy.deepcopy(DEFAULT_CONFIG)
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
@@ -68,6 +74,7 @@ def set_setting(key, value):
 
 def apply_startup_setting():
     try:
+        import winreg
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_ALL_ACCESS)
         app_name = "Layvix"
         if config.get("run_on_startup", False):

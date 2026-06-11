@@ -3,6 +3,11 @@ import time
 
 user32 = ctypes.windll.user32
 
+
+def _get_primary_language_id(hkl):
+    layout_id = int(ctypes.cast(hkl, ctypes.c_void_p).value or 0) & 0xFFFF
+    return layout_id & 0x03FF
+
 def get_current_language():
     """
     Returns the primary language ID of the active window.
@@ -25,6 +30,36 @@ def switch_language():
     # INPUTLANGCHANGE_FORWARD = 0x0002
     user32.PostMessageW(hwnd, 0x0050, 2, 0)
     time.sleep(0.05) # Give Windows a tiny moment to switch
+
+
+def switch_to_language(target_primary_lang_id):
+    """Switch directly to a keyboard layout with the requested primary language id."""
+    try:
+        count = user32.GetKeyboardLayoutList(0, None)
+        if count <= 0:
+            return False
+
+        layouts = (ctypes.c_void_p * count)()
+        actual = user32.GetKeyboardLayoutList(count, layouts)
+        if actual <= 0:
+            return False
+
+        target_hkl = None
+        for hkl in layouts[:actual]:
+            if _get_primary_language_id(hkl) == target_primary_lang_id:
+                target_hkl = hkl
+                break
+
+        if target_hkl is None:
+            return False
+
+        hwnd = user32.GetForegroundWindow()
+        user32.PostMessageW(hwnd, 0x0050, 0, target_hkl)
+        user32.ActivateKeyboardLayout(target_hkl, 0)
+        time.sleep(0.05)
+        return True
+    except Exception:
+        return False
 
 if __name__ == "__main__":
     lang = get_current_language()

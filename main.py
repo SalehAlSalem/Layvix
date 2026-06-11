@@ -8,6 +8,7 @@ import sklearn # Explicit import required for PyInstaller to pack it
 import pickle
 import time
 import threading
+import queue
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QIcon
@@ -17,7 +18,7 @@ import user_dictionary
 import game_detector
 import active_window
 from mapper import convert_word
-from layout_helper import get_current_language, switch_language
+from layout_helper import get_current_language, switch_language, switch_to_language
 import ai_engine
 import learner
 from logger import get_logger
@@ -55,6 +56,8 @@ class CoreWorker(QThread):
         self.running = True
         self.is_correcting = False
         self.current_word = []
+        self._word_lock = threading.Lock()
+        self.word_queue = queue.Queue(maxsize=100)
         self.last_key_time = 0
         self.undo_history = []
         self.shift_pressed = False
@@ -75,6 +78,8 @@ class CoreWorker(QThread):
     def run(self):
         import keyboard
         self.setup_hotkeys()
+        self.word_worker = threading.Thread(target=self._process_queue, daemon=True, name="LayvixWordWorker")
+        self.word_worker.start()
         
         while self.running:
             time.sleep(0.1)
@@ -90,6 +95,36 @@ class CoreWorker(QThread):
 
     def set_enabled(self, val):
         self.enabled = val
+
+    def _copy_current_word(self):
+        with self._word_lock:
+            return "".join(self.current_word).strip()
+
+    def _clear_current_word(self):
+        with self._word_lock:
+            self.current_word.clear()
+
+    def _pop_current_word(self):
+        with self._word_lock:
+            if self.current_word:
+                return self.current_word.pop()
+            return None
+
+    def _append_current_key(self, key):
+        with self._word_lock:
+            self.current_word.append(key)
+
+    def _process_queue(self):
+        while self.running or not self.word_queue.empty():
+            try:
+                word_str = self.word_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                if word_str:
+                    self._process_word(word_str)
+            finally:
+                self.word_queue.task_done()
 
     def setup_hotkeys(self):
         import keyboard
@@ -117,6 +152,10 @@ class CoreWorker(QThread):
         except: pass
             
     def trigger_manual(self):
+        import threading
+        threading.Thread(target=self._trigger_manual_logic, daemon=True).start()
+
+    def _trigger_manual_logic(self):
         logger.info(f"[DEBUG] trigger_manual called! enabled={self.enabled}, is_correcting={self.is_correcting}")
         if not self.enabled or self.is_correcting:
             return
@@ -145,13 +184,8 @@ class CoreWorker(QThread):
             user32.keybd_event(vk, 0, 2, 0) # 2 is KEYUP
         time.sleep(0.05)
         
-        # Send clean Ctrl+C via user32
-        user32.keybd_event(0x11, 0, 0, 0) # Ctrl down
-        user32.keybd_event(0x43, 0, 0, 0) # C down
-        time.sleep(0.02)
-        user32.keybd_event(0x43, 0, 2, 0) # C up
-        user32.keybd_event(0x11, 0, 2, 0) # Ctrl up
-        
+        # Send clean Ctrl+C via keyboard module
+        keyboard.send('ctrl+c')
         time.sleep(0.2) # Wait longer for OS to copy to clipboard
         
         selected_text = pyperclip.paste()
@@ -163,7 +197,7 @@ class CoreWorker(QThread):
         else:
             pyperclip.copy(old_clipboard) # Restore if empty
             # 2. Fallback to typed word logic
-            word_str = "".join(self.current_word).strip()
+            word_str = self._copy_current_word()
             if not word_str:
                 word_str = self.last_typed_word
                 
@@ -175,7 +209,7 @@ class CoreWorker(QThread):
                     pass
                 return
                 
-            self.current_word.clear()
+            self._clear_current_word()
             
         lang_id = get_current_language()
         current_layout = 'ar' if lang_id == 1 else 'en'
@@ -210,7 +244,7 @@ class CoreWorker(QThread):
         # We must clear the typing buffers so we don't blindly send backspaces to the wrong place.
         import mouse
         if isinstance(event, mouse.ButtonEvent) and event.event_type == 'down':
-            self.current_word.clear()
+            self._clear_current_word()
             self.last_typed_word = ""
             self.pending_short_word = None
 
@@ -231,23 +265,24 @@ class CoreWorker(QThread):
         try:
             name = event.name
             if len(name) == 1:
-                if time.time() - self.last_key_time > 2.0:
-                    self.current_word.clear()
-                self.current_word.append(name)
+                with self._word_lock:
+                    if time.time() - self.last_key_time > 2.0:
+                        self.current_word.clear()
+                    self.current_word.append(name)
                 self.last_key_time = time.time()
             elif name == 'space':
-                word_str = "".join(self.current_word).strip()
+                word_str = self._copy_current_word()
                 if word_str:
-                    # Run process_word in a background thread so we don't block the hook
-                    threading.Thread(target=self._process_word, args=(word_str,), daemon=True).start()
-                self.current_word.clear()
+                    try:
+                        self.word_queue.put_nowait(word_str)
+                    except queue.Full:
+                        logger.warning(f"[QUEUE] Word queue full, dropping word: {word_str}")
+                self._clear_current_word()
             elif name == 'backspace':
-                if self.current_word:
-                    self.current_word.pop()
-                else:
+                if self._pop_current_word() is None:
                     self.pending_short_word = None
             elif name == 'enter':
-                self.current_word.clear()
+                self._clear_current_word()
                 self.pending_short_word = None
             elif name == 'shift':
                 self.shift_pressed = True
@@ -255,14 +290,19 @@ class CoreWorker(QThread):
             pass
 
     def trigger_undo(self):
+        import threading
+        threading.Thread(target=self._trigger_undo_logic, daemon=True).start()
+
+    def _trigger_undo_logic(self):
         if not self.enabled or not self.undo_history or self.is_correcting:
             return
             
         self.is_correcting = True
         
         # Capture extra keys typed by the user to prevent backspace absorption
-        extra_keys = list(self.current_word)
-        self.current_word.clear()
+        with self._word_lock:
+            extra_keys = list(self.current_word)
+            self.current_word.clear()
         
         user32 = ctypes.windll.user32
         for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C]:
@@ -274,12 +314,21 @@ class CoreWorker(QThread):
         if time.time() - last['time'] < 30:
             import keyboard
             total_backspaces = len(last['correct']) + 1 + len(extra_keys)
-            for _ in range(total_backspaces):
-                keyboard.send('backspace')
-                time.sleep(0.01)
+            user32 = ctypes.windll.user32
+            user32.BlockInput(True)
+            try:
+                for _ in range(total_backspaces):
+                    keyboard.send('backspace')
+                    time.sleep(0.015)
+            finally:
+                user32.BlockInput(False)
+                
+            time.sleep(0.01)
             
             if last.get('switched', True):
-                switch_language()
+                restore_lang = 9 if last.get('predicted_layout', 'ar') == 'ar' else 1
+                if not switch_to_language(restore_lang):
+                    switch_language()
                 time.sleep(0.05)
             
             import pyperclip
@@ -292,11 +341,7 @@ class CoreWorker(QThread):
             try:
                 pyperclip.copy(last['wrong'] + ' ')
                 time.sleep(0.05)
-                user32.keybd_event(0x11, 0, 0, 0)
-                user32.keybd_event(0x56, 0, 0, 0)
-                time.sleep(0.02)
-                user32.keybd_event(0x56, 0, 2, 0)
-                user32.keybd_event(0x11, 0, 2, 0)
+                keyboard.send('ctrl+v')
                 time.sleep(0.1)
             finally:
                 if old_cb:
@@ -311,7 +356,7 @@ class CoreWorker(QThread):
                 for key in extra_keys:
                     keyboard.send(key)
                     time.sleep(0.01)
-                    self.current_word.append(key)
+                    self._append_current_key(key)
             
             user_dictionary.add_correction(last['wrong'], last['wrong'])
             _stats["words_learned"] += 1
@@ -343,6 +388,16 @@ class CoreWorker(QThread):
             
         lang_id = get_current_language()
         current_layout = 'ar' if lang_id == 1 else 'en'
+        
+        # Windows GetKeyboardLayout is often incorrect for modern apps.
+        # Trust the actual typed characters to determine the real layout.
+        has_arabic = any('\u0600' <= c <= '\u06FF' for c in word_str)
+        has_english = any('a' <= c.lower() <= 'z' for c in word_str)
+        if has_arabic and not has_english:
+            current_layout = 'ar'
+        elif has_english and not has_arabic:
+            current_layout = 'en'
+            
         self.last_typed_word = word_str
             
         # Check user overrides first
@@ -377,9 +432,12 @@ class CoreWorker(QThread):
         logger.info(f"[AI] '{word_str}' (test='{test_word}') \u2192 predicted={predicted_layout} conf={confidence:.2%} current={current_layout}")
         
         # Only correct if AI is confident enough
-        threshold = float(settings.get_setting("ai_confidence_threshold") or settings.get_setting("confidence_threshold") or 0.85)
+        base_threshold = float(settings.get_setting("ai_confidence_threshold") or settings.get_setting("confidence_threshold") or 0.80)
+        # Lower threshold for short words (1-3 chars) because they have fewer statistical features
+        threshold = base_threshold - 0.10 if len(word_str) <= 3 else base_threshold
+        
         if confidence < threshold or predicted_layout == 'unknown':
-            logger.info(f"[SKIP] low confidence or unknown (Saved for retroactive analysis)")
+            logger.info(f"[SKIP] low confidence ({confidence:.2%} < {threshold:.2%}) or unknown (Saved for retroactive)")
             self.pending_short_word = word_str
             self.pending_short_layout = current_layout
             self.pending_short_time = time.time()
@@ -462,8 +520,9 @@ class CoreWorker(QThread):
         self.is_correcting = True
         
         # Capture keystrokes that user typed while AI was thinking to prevent them from absorbing backspaces
-        extra_keys = list(self.current_word)
-        self.current_word.clear()
+        with self._word_lock:
+            extra_keys = list(self.current_word)
+            self.current_word.clear()
         
         self.undo_history.append({'time': time.time(), 'wrong': wrong, 'correct': correct, 'switched': switch, 'predicted_layout': predicted_layout})
         if len(self.undo_history) > 50: self.undo_history.pop(0)
@@ -490,12 +549,21 @@ class CoreWorker(QThread):
         
         if not is_selection:
             total_backspaces = len(wrong) + 1 + len(extra_keys)
-            for _ in range(total_backspaces):
-                keyboard.send('backspace')
-                time.sleep(0.01)
+            user32 = ctypes.windll.user32
+            user32.BlockInput(True)
+            try:
+                for _ in range(total_backspaces):
+                    keyboard.send('backspace')
+                    time.sleep(0.015)
+            finally:
+                user32.BlockInput(False)
+                
+            time.sleep(0.01)
             
         if switch:
-            switch_language()
+            target_lang = 1 if predicted_layout == 'en' else 9
+            if not switch_to_language(target_lang):
+                switch_language()
             time.sleep(0.05)
         
         old_cb = ""
@@ -507,11 +575,7 @@ class CoreWorker(QThread):
         try:
             pyperclip.copy(correct + ' ')
             time.sleep(0.05)
-            user32.keybd_event(0x11, 0, 0, 0)
-            user32.keybd_event(0x56, 0, 0, 0)
-            time.sleep(0.02)
-            user32.keybd_event(0x56, 0, 2, 0)
-            user32.keybd_event(0x11, 0, 2, 0)
+            keyboard.send('ctrl+v')
             time.sleep(0.1)
         finally:
             if old_cb:
@@ -526,7 +590,7 @@ class CoreWorker(QThread):
             for key in extra_keys:
                 keyboard.send(key)
                 time.sleep(0.01)
-                self.current_word.append(key)
+                self._append_current_key(key)
         
         _stats["corrections_today"] += 1
         _stats["total_corrections"] += 1
