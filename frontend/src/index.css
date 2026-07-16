@@ -1,0 +1,88 @@
+:root {
+  /* Colors - Cold Luxury / Dark Tech Monochrome */
+  --void-bg: #030712; /* Gray 950 */
+  --surface-bg: rgba(255, 255, 255, 0.03); 
+  --surface-hover: rgba(255, 255, 255, 0.06); 
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-focus: rgba(255, 255, 255, 0.2);
+  
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8; /* Slate 400 */
+  --text-muted: #475569; /* Slate 600 */
+  
+  --accent-active: #ffffff; /* Monochrome primary accent */
+  --accent-success: #10b981;
+  --accent-danger: #ef4444;
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+
+  /* Animation */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--void-bg);
+  color: var(--text-primary);
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Layout Core */
+#app-root {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  grid-template-rows: 32px 1fr;
+  grid-template-areas:
+    "sidebar title"
+    "sidebar content";
+  width: 100vw;
+  height: 100vh;
+}
+
+.view-container {
+  grid-area: content;
+  overflow: hidden;
+  display: flex;
+  background-color: transparent;
+}
+
+.dashboard-grid {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  grid-template-rows: 72px 1fr 120px;
+  grid-template-areas:
+    "stats"
+    "console"
+    "activity";
+}
+
+

@@ -1,684 +1,378 @@
 import sys
 import os
 import ctypes
-import pynput.keyboard
-import mouse
-import numpy as np
-import sklearn # Explicit import required for PyInstaller to pack it
-import pickle
-import time
+
+_mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\LayvixHookMutex_Current")
+if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    ctypes.windll.user32.MessageBoxW(0, "Layvix is already running.", "Layvix", 0)
+    sys.exit(0)
+
+if getattr(sys, 'frozen', False):
+    sys.stdout = open(os.devnull, 'w')
+    sys.stderr = open(os.devnull, 'w')
+
 import threading
-import queue
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtGui import QIcon
+import webview
+import socket
+import secrets
+import uvicorn
+import pystray
+from PIL import Image
 
-import settings
-import user_dictionary
-import game_detector
-import active_window
-from mapper import convert_word
-from layout_helper import get_current_language, switch_language, switch_to_language
-import ai_engine
-import learner
-from logger import get_logger
+from core.core_engine import CoreEngine
+from utils import settings, logger
 
-import gui
-from gui import MainWindow
-from plyer import notification
+shutdown_event = threading.Event()
 
-logger = get_logger()
+app_logger = logger.get_logger()
 
-# Global stats
-_stats = settings.get_setting("stats") or {"corrections_today": 0, "total_corrections": 0, "words_learned": 0}
+def find_free_port():
+    """Finds an OS-assigned free port on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
 
-# Ensure all keys exist
-for key in ["corrections_today", "total_corrections", "words_learned"]:
-    if key not in _stats:
-        _stats[key] = 0
+def start_fastapi(port):
+    """Starts the Uvicorn server programmatically in a background thread."""
+    import api
+    # Crucial Security: Strict bind to 127.0.0.1
+    uvicorn.run(api.app, host="127.0.0.1", port=port, log_level="error")
 
-# Daily reset: if today's date is different from last saved date, reset today's counter
-import datetime
-_today = datetime.date.today().isoformat()
-_last_date = settings.get_setting("stats_date")
-if _last_date != _today:
-    _stats["corrections_today"] = 0
-    settings.set_setting("stats_date", _today)
-
-def save_stats():
-    settings.set_setting("stats", _stats)
-
-
-class CoreWorker(QThread):
+class LayvixApp:
     def __init__(self):
-        super().__init__()
-        self.enabled = True
-        self.running = True
-        self.is_correcting = False
-        self.current_word = []
-        self._word_lock = threading.Lock()
-        self.word_queue = queue.Queue(maxsize=100)
-        self.last_key_time = 0
-        self.undo_history = []
-        self.shift_pressed = False
-        self.listener = None
-        self.auto_mode = True  # True = auto correct, False = manual only
-        self.last_typed_word = ""
+        self.core = CoreEngine()
+        self.window = None
+        self.tray_icon = None
+        self._webview_started = False
+        self._open_settings_lock = threading.Lock()
         
-        # Monitor mouse clicks to clear buffers (preventing blind backspaces)
-        import mouse
-        try:
-            mouse.hook(self.on_mouse_event)
-        except Exception as e:
-            logger.error(f"Failed to hook mouse: {e}")
-        self.last_manual_word = None
-        self.pending_short_word = None
-        self.pending_short_time = 0
+        # Authentication & Port
+        self.port = find_free_port()
+        self.token = secrets.token_hex(16)
         
-    def run(self):
-        import keyboard
-        self.setup_hotkeys()
-        self.word_worker = threading.Thread(target=self._process_queue, daemon=True, name="LayvixWordWorker")
-        self.word_worker.start()
-        
-        while self.running:
-            time.sleep(0.1)
-            
-        try:
-            keyboard.unhook(self.on_key_event)
-        except:
-            pass
-        
-    def stop(self):
-        self.running = False
-        self.wait()
+        # Store for API access
+        os.environ["LAYVIX_SECURITY_TOKEN"] = self.token
+        os.environ["LAYVIX_PORT"] = str(self.port)
 
-    def set_enabled(self, val):
-        self.enabled = val
-
-    def _copy_current_word(self):
-        with self._word_lock:
-            return "".join(self.current_word).strip()
-
-    def _clear_current_word(self):
-        with self._word_lock:
-            self.current_word.clear()
-
-    def _pop_current_word(self):
-        with self._word_lock:
-            if self.current_word:
-                return self.current_word.pop()
-            return None
-
-    def _append_current_key(self, key):
-        with self._word_lock:
-            self.current_word.append(key)
-
-    def _process_queue(self):
-        while self.running or not self.word_queue.empty():
-            try:
-                word_str = self.word_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            try:
-                if word_str:
-                    self._process_word(word_str)
-            finally:
-                self.word_queue.task_done()
-
-    def setup_hotkeys(self):
-        import keyboard
-        try:
-            keyboard.unhook_all()
-        except:
-            pass
-        
-        undo_hk = settings.get_setting("undo_hotkey") or "pause"
-        try: 
-            keyboard.add_hotkey(undo_hk, self.trigger_undo)
-            logger.info(f"[HOTKEYS] Registered undo hotkey: {undo_hk}")
-        except Exception as e: 
-            logger.error(f"[HOTKEYS] Failed to register undo hotkey '{undo_hk}': {e}")
-            
-        manual_hk = settings.get_setting("manual_hotkey") or "shift+pause"
-        try: 
-            keyboard.add_hotkey(manual_hk, self.trigger_manual)
-            logger.info(f"[HOTKEYS] Registered manual hotkey: {manual_hk}")
-        except Exception as e: 
-            logger.error(f"[HOTKEYS] Failed to register manual hotkey '{manual_hk}': {e}")
-        
-        # Re-hook our main listener after unhook_all
-        try: keyboard.hook(self.on_key_event)
-        except: pass
-            
-    def trigger_manual(self):
-        import threading
-        threading.Thread(target=self._trigger_manual_logic, daemon=True).start()
-
-    def _trigger_manual_logic(self):
-        logger.info(f"[DEBUG] trigger_manual called! enabled={self.enabled}, is_correcting={self.is_correcting}")
-        if not self.enabled or self.is_correcting:
-            return
-            
-        import pyperclip
-        import keyboard
-        import time
-        
-        # 1. Check if text is currently highlighted by simulating Ctrl+C
-        old_clipboard = pyperclip.paste()
-        pyperclip.copy('')  # Clear it temporarily
-        
-        # Wait for user to physically release modifiers to avoid shortcut collision
-        modifiers = ['ctrl', 'alt', 'shift', 'windows', 'right ctrl', 'right alt', 'right shift', 'left ctrl', 'left alt', 'left shift']
-        timeout = time.time() + 2.0
-        while time.time() < timeout:
-            if not any(keyboard.is_pressed(m) for m in modifiers):
-                break
-            time.sleep(0.05)
-            
-        import ctypes
-        user32 = ctypes.windll.user32
-        
-        # Force software release of modifiers
-        for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C]: # Shift, Ctrl, Alt, LWin, RWin
-            user32.keybd_event(vk, 0, 2, 0) # 2 is KEYUP
-        time.sleep(0.05)
-        
-        # Send clean Ctrl+C via keyboard module
-        keyboard.send('ctrl+c')
-        time.sleep(0.2) # Wait longer for OS to copy to clipboard
-        
-        selected_text = pyperclip.paste()
-        is_selection = bool(selected_text.strip())
-        
-        if is_selection:
-            word_str = selected_text
-            pyperclip.copy(old_clipboard) # Restore old clipboard
-        else:
-            pyperclip.copy(old_clipboard) # Restore if empty
-            # 2. Fallback to typed word logic
-            word_str = self._copy_current_word()
-            if not word_str:
-                word_str = self.last_typed_word
-                
-            if not word_str:
-                try:
-                    from plyer import notification
-                    notification.notify(title="تنبيه ⚠️", message="يرجى تحديد (تظليل) الكلمة التي تريد تصحيحها أولاً.", app_name="Layvix", timeout=3)
-                except:
-                    pass
-                return
-                
-            self._clear_current_word()
-            
-        lang_id = get_current_language()
-        current_layout = 'ar' if lang_id == 1 else 'en'
-        
-        # Determine actual typed layout by character content
-        is_arabic = any('\u0600' <= c <= '\u06FF' for c in word_str)
-        
-        if not is_arabic:  # Typed in English chars, user wants Arabic
-            corrected = convert_word(word_str, 'en_to_ar')
-            target_layout = 'ar'
-        else:              # Typed in Arabic chars, user wants English
-            corrected = convert_word(word_str, 'ar_to_en')
-            target_layout = 'en'
-            
-        logger.info(f"[MANUAL] User forced correction for '{word_str}' \u2192 '{corrected}' (selection: {is_selection})")
-        self.do_correction(word_str, corrected, switch=True, predicted_layout=target_layout, is_selection=is_selection)
-        
-        # SMART LEARNING: Split sentence into words and learn them individually
-        original_words = word_str.split()
-        corrected_words = corrected.split()
-        
-        for w_wrong, w_right in zip(original_words, corrected_words):
-            # Learn in AI model
-            w_is_arabic = any('\u0600' <= c <= '\u06FF' for c in w_wrong)
-            learner.learn_from_manual(convert_word(w_wrong, 'ar_to_en') if w_is_arabic else w_wrong, 'ar' if w_is_arabic else 'en', target_layout)
-            
-            # Add to explicit User Dictionary to enforce it immediately
-            user_dictionary.add_correction(w_wrong, w_right)
-
-    def on_mouse_event(self, event):
-        # If the user clicks the mouse, they moved the cursor.
-        # We must clear the typing buffers so we don't blindly send backspaces to the wrong place.
-        import mouse
-        if isinstance(event, mouse.ButtonEvent) and event.event_type == 'down':
-            self._clear_current_word()
-            self.last_typed_word = ""
-            self.pending_short_word = None
-
-    def on_key_event(self, event):
-        if event.event_type == 'up':
-            if event.name == 'shift':
-                self.shift_pressed = False
-            return
-            
-        if not self.enabled or self.is_correcting:
-            return
-            
-        import keyboard
-        # Ignore normal typing if major modifiers are pressed (e.g. during a hotkey)
-        if keyboard.is_pressed('ctrl') or keyboard.is_pressed('alt') or keyboard.is_pressed('windows'):
-            return
-            
-        try:
-            name = event.name
-            if len(name) == 1:
-                with self._word_lock:
-                    if time.time() - self.last_key_time > 2.0:
-                        self.current_word.clear()
-                    self.current_word.append(name)
-                self.last_key_time = time.time()
-            elif name == 'space':
-                word_str = self._copy_current_word()
-                if word_str:
-                    try:
-                        self.word_queue.put_nowait(word_str)
-                    except queue.Full:
-                        logger.warning(f"[QUEUE] Word queue full, dropping word: {word_str}")
-                self._clear_current_word()
-            elif name == 'backspace':
-                if self._pop_current_word() is None:
-                    self.pending_short_word = None
-            elif name == 'enter':
-                self._clear_current_word()
-                self.pending_short_word = None
-            elif name == 'shift':
-                self.shift_pressed = True
-        except:
-            pass
-
-    def trigger_undo(self):
-        import threading
-        threading.Thread(target=self._trigger_undo_logic, daemon=True).start()
-
-    def _trigger_undo_logic(self):
-        if not self.enabled or not self.undo_history or self.is_correcting:
-            return
-            
-        self.is_correcting = True
-        
-        # Capture extra keys typed by the user to prevent backspace absorption
-        with self._word_lock:
-            extra_keys = list(self.current_word)
-            self.current_word.clear()
-        
-        user32 = ctypes.windll.user32
-        for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C]:
-            user32.keybd_event(vk, 0, 2, 0)
-        time.sleep(0.05)
-        KEYEVENTF_SCANCODE = 0x0008
-        KEYEVENTF_KEYUP = 0x0002
-        last = self.undo_history.pop()
-        if time.time() - last['time'] < 30:
-            import keyboard
-            total_backspaces = len(last['correct']) + 1 + len(extra_keys)
-            user32 = ctypes.windll.user32
-            user32.BlockInput(True)
-            try:
-                for _ in range(total_backspaces):
-                    keyboard.send('backspace')
-                    time.sleep(0.015)
-            finally:
-                user32.BlockInput(False)
-                
-            time.sleep(0.01)
-            
-            if last.get('switched', True):
-                restore_lang = 9 if last.get('predicted_layout', 'ar') == 'ar' else 1
-                if not switch_to_language(restore_lang):
-                    switch_language()
-                time.sleep(0.05)
-            
-            import pyperclip
-            old_cb = ""
-            try:
-                old_cb = pyperclip.paste()
-            except:
-                pass
-                
-            try:
-                pyperclip.copy(last['wrong'] + ' ')
-                time.sleep(0.05)
-                keyboard.send('ctrl+v')
-                time.sleep(0.1)
-            finally:
-                if old_cb:
-                    try:
-                        pyperclip.copy(old_cb)
-                    except:
-                        pass
-                        
-            # Replay extra keys
-            if extra_keys:
-                time.sleep(0.02)
-                for key in extra_keys:
-                    keyboard.send(key)
-                    time.sleep(0.01)
-                    self._append_current_key(key)
-            
-            user_dictionary.add_correction(last['wrong'], last['wrong'])
-            _stats["words_learned"] += 1
-            save_stats()
-            
-            # LEARN: user undid -> AI was wrong
-            predicted = last.get('predicted_layout', 'ar')
-            learner.learn_from_undo(last['wrong'], predicted)
-            
-            try:
-                notification.notify(title="التراجع الذكي ↩️", message=f"تم إرجاع '{last['wrong']}' كاستثناء.", app_name="Layvix", timeout=2)
-            except:
-                pass
-            
-            _stats["corrections_today"] -= 1
-            _stats["total_corrections"] -= 1
-            save_stats()
-            
-        self.is_correcting = False
-
-
-
-    def _process_word(self, word_str):
-        """Pure AI-based layout correction. No dictionaries."""
-        active_exe = active_window.get_active_window_exe()
-        if active_exe and active_exe in settings.get_setting("excluded_apps"):
-            logger.info(f"[SKIP] excluded app: {active_exe}")
-            return
-            
-        lang_id = get_current_language()
-        current_layout = 'ar' if lang_id == 1 else 'en'
-        
-        # Windows GetKeyboardLayout is often incorrect for modern apps.
-        # Trust the actual typed characters to determine the real layout.
-        has_arabic = any('\u0600' <= c <= '\u06FF' for c in word_str)
-        has_english = any('a' <= c.lower() <= 'z' for c in word_str)
-        if has_arabic and not has_english:
-            current_layout = 'ar'
-        elif has_english and not has_arabic:
-            current_layout = 'en'
-            
-        self.last_typed_word = word_str
-            
-        # Check user overrides first
-        user_correction = user_dictionary.get_correction(word_str)
-        if user_correction:
-            if user_correction != word_str:
-                self.do_correction(word_str, user_correction)
-            return
-        
-        # Skip very short words based on setting (Save for retroactive)
-        min_len = int(settings.get_setting("min_word_length") or 2)
-        if len(word_str) < min_len:
-            logger.info(f"[SKIP] too short: '{word_str}' (Saved for retroactive analysis)")
-            self.pending_short_word = word_str
-            self.pending_short_layout = current_layout
-            self.pending_short_time = time.time()
-            return
-            
-        # Clear pending short word if it's older than 2.5 seconds
-        if self.pending_short_word and (time.time() - self.pending_short_time > 2.5):
-            self.pending_short_word = None
-        
-        is_arabic = any('\u0600' <= c <= '\u06FF' for c in word_str)
-        
-        # AI only understands QWERTY English chars, so map Arabic typed chars to their English keys first
-        test_word = word_str
-        if is_arabic:
-            test_word = convert_word(word_str, 'ar_to_en')
-        
-        # Ask the AI
-        predicted_layout, confidence = ai_engine.predict_layout(test_word)
-        logger.info(f"[AI] '{word_str}' (test='{test_word}') \u2192 predicted={predicted_layout} conf={confidence:.2%} current={current_layout}")
-        
-        # Only correct if AI is confident enough
-        base_threshold = float(settings.get_setting("ai_confidence_threshold") or settings.get_setting("confidence_threshold") or 0.80)
-        # Lower threshold for short words (1-3 chars) because they have fewer statistical features
-        threshold = base_threshold - 0.10 if len(word_str) <= 3 else base_threshold
-        
-        if confidence < threshold or predicted_layout == 'unknown':
-            logger.info(f"[SKIP] low confidence ({confidence:.2%} < {threshold:.2%}) or unknown (Saved for retroactive)")
-            self.pending_short_word = word_str
-            self.pending_short_layout = current_layout
-            self.pending_short_time = time.time()
-            return
-            
-        # If AI says this word belongs to a different layout than current
-        if predicted_layout != current_layout:
-            if current_layout == 'en':
-                corrected = convert_word(word_str, 'en_to_ar')
-            else:
-                corrected = convert_word(word_str, 'ar_to_en')
-                
-            # --- RETROACTIVE CORRECTION TRIGGER ---
-            retro_enabled = settings.get_setting("retroactive_correction")
-            if retro_enabled is None: retro_enabled = True
-            
-            if self.pending_short_word and retro_enabled:
-                prev_word = self.pending_short_word
-                if current_layout == 'en':
-                    prev_corrected = convert_word(prev_word, 'en_to_ar')
-                else:
-                    prev_corrected = convert_word(prev_word, 'ar_to_en')
-                
-                self.pending_short_word = None
-                logger.info(f"[RETROACTIVE] Correcting past short word: '{prev_word}' -> '{prev_corrected}'")
-                logger.info(f"[CORRECT] Current word: '{word_str}' -> '{corrected}'")
-                
-                if self.auto_mode:
-                    # First: go back and correct the previous short word (it's sitting before the current cursor)
-                    # The cursor is at: ...prev_word[SPACE]current_word[SPACE]
-                    # We need to go back: len(current_word)+1 (for space after current) + len(prev_word)+1 (for space after prev)
-                    # Then retype: prev_corrected + SPACE + corrected + SPACE
-                    self.do_correction(
-                        prev_word + " " + word_str,
-                        prev_corrected + " " + corrected,
-                        switch=True,
-                        predicted_layout=predicted_layout
-                    )
-                return
-            # ----------------------------------------
-            
-            self.pending_short_word = None
-            if self.auto_mode:
-                logger.info(f"[CORRECT] '{word_str}' → '{corrected}' (auto)")
-                self.do_correction(word_str, corrected, switch=True, predicted_layout=predicted_layout)
-            else:
-                logger.info(f"[MANUAL MODE] would correct '{word_str}' → '{corrected}' but auto is off")
-        else:
-            retro_enabled = settings.get_setting("retroactive_correction")
-            if retro_enabled is None: retro_enabled = True
-            
-            if self.pending_short_word and retro_enabled and hasattr(self, 'pending_short_layout') and self.pending_short_layout != current_layout:
-                prev_word = self.pending_short_word
-                if self.pending_short_layout == 'en':
-                    prev_corrected = convert_word(prev_word, 'en_to_ar')
-                else:
-                    prev_corrected = convert_word(prev_word, 'ar_to_en')
-                    
-                prev_test_word = convert_word(prev_word, 'ar_to_en') if any('\u0600' <= c <= '\u06FF' for c in prev_word) else prev_word
-                prev_pred, prev_conf = ai_engine.predict_layout(prev_test_word)
-                
-                if prev_pred == current_layout and prev_conf >= threshold:
-                    self.pending_short_word = None
-                    logger.info(f"[RETROACTIVE] Manual Switch: correcting past short word '{prev_word}' -> '{prev_corrected}'")
-                    if self.auto_mode:
-                        # Cursor is at: ...prev_word[SPACE]current_word[SPACE]
-                        # Correct only the previous word, current word is already correct
-                        self.do_correction(
-                            prev_word + " " + word_str,
-                            prev_corrected + " " + word_str,
-                            switch=False,
-                            predicted_layout=predicted_layout
-                        )
-                    return
-                    
-            self.pending_short_word = None
-            logger.info(f"[OK] same layout, no correction needed")
-            
-    def do_correction(self, wrong, correct, switch=True, predicted_layout='ar', is_selection=False):
-        self.is_correcting = True
-        
-        # Capture keystrokes that user typed while AI was thinking to prevent them from absorbing backspaces
-        with self._word_lock:
-            extra_keys = list(self.current_word)
-            self.current_word.clear()
-        
-        self.undo_history.append({'time': time.time(), 'wrong': wrong, 'correct': correct, 'switched': switch, 'predicted_layout': predicted_layout})
-        if len(self.undo_history) > 50: self.undo_history.pop(0)
-        
-        user32 = ctypes.windll.user32
-        import keyboard
-        import pyperclip
-        
-        # Wait for user to physically release modifiers to avoid shortcut collision
-        modifiers = ['ctrl', 'alt', 'shift', 'windows', 'right ctrl', 'right alt', 'right shift', 'left ctrl', 'left alt', 'left shift']
-        timeout = time.time() + 2.0
-        while time.time() < timeout:
-            if not any(keyboard.is_pressed(m) for m in modifiers):
-                break
-            time.sleep(0.05)
-            
-        # Force software release of modifiers
-        for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C]:
-            user32.keybd_event(vk, 0, 2, 0)
-        time.sleep(0.05)
-        
-        KEYEVENTF_SCANCODE = 0x0008
-        KEYEVENTF_KEYUP = 0x0002
-        
-        if not is_selection:
-            total_backspaces = len(wrong) + 1 + len(extra_keys)
-            user32 = ctypes.windll.user32
-            user32.BlockInput(True)
-            try:
-                for _ in range(total_backspaces):
-                    keyboard.send('backspace')
-                    time.sleep(0.015)
-            finally:
-                user32.BlockInput(False)
-                
-            time.sleep(0.01)
-            
-        if switch:
-            target_lang = 1 if predicted_layout == 'en' else 9
-            if not switch_to_language(target_lang):
-                switch_language()
-            time.sleep(0.05)
-        
-        old_cb = ""
-        try:
-            old_cb = pyperclip.paste()
-        except:
-            pass
-            
-        try:
-            pyperclip.copy(correct + ' ')
-            time.sleep(0.05)
-            keyboard.send('ctrl+v')
-            time.sleep(0.1)
-        finally:
-            if old_cb:
-                try:
-                    pyperclip.copy(old_cb)
-                except:
-                    pass
-                    
-        # Re-play the extra keys that were typed
-        if extra_keys and not is_selection:
-            time.sleep(0.02)
-            for key in extra_keys:
-                keyboard.send(key)
-                time.sleep(0.01)
-                self._append_current_key(key)
-        
-        _stats["corrections_today"] += 1
-        _stats["total_corrections"] += 1
-        save_stats()
-        self.is_correcting = False
-        
-        # LEARN: reinforce accepted correction after 5 seconds if not undone
-        wrong_copy = wrong
-        pred_copy = predicted_layout
-        def delayed_learn():
-            time.sleep(5)
-            # If user didn't undo within 5 seconds, reinforce
-            if self.undo_history and self.undo_history[-1]['wrong'] == wrong_copy:
-                learner.learn_from_accepted(wrong_copy, pred_copy)
-        threading.Thread(target=delayed_learn, daemon=True).start()
-
-# Global access
-_worker = None
-
-def get_stats():
-    return _stats
-
-def stop_all():
-    if _worker:
-        _worker.stop()
-
-def main():
-    try:
-        # Single instance lock
-        mutex_name = "Global\\Layvix_v2_Mutex"
-        kernel32 = ctypes.windll.kernel32
-        mutex = kernel32.CreateMutexW(None, False, mutex_name)
-        last_error = kernel32.GetLastError()
-        if last_error == 183: # ERROR_ALREADY_EXISTS
-            user32 = ctypes.windll.user32
-            hwnd = user32.FindWindowW(None, f"Layvix v{gui.VERSION}")
-            if hwnd:
-                user32.ShowWindow(hwnd, 5)
-                user32.SetForegroundWindow(hwnd)
-            sys.exit(1)
-
-        app = QApplication(sys.argv)
-        app.setQuitOnLastWindowClosed(False)
-        
-        # Set Official App Icon (Octopus)
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        icon_path = os.path.join(base_dir, "icon.ico")
+    def _create_tray_image(self):
+        base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        icon_path = os.path.join(base_dir, 'data', 'tray_icon_16.png')
         if os.path.exists(icon_path):
-            app.setWindowIcon(QIcon(icon_path))
+            return Image.open(icon_path)
+        return Image.new('RGB', (64, 64), color=(59, 130, 246))
+
+    def _build_window(self, hidden=False):
+        if self.window is not None:
+            return self.window
+
+        base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        html_path = os.path.join(base_dir, "frontend", "dist", "index.html")
+        dist_dir = os.path.join(base_dir, "frontend", "dist")
+
+        # The frontend is now served directly by our FastAPI backend (api.py).
+        # This completely eliminates CORS issues and pywebview http_server bugs.
+        url = f"http://127.0.0.1:{self.port}/?port={self.port}&token={self.token}"
+
+        self.window = webview.create_window(
+            'Layvix Pro Control Center',
+            url=url,
+            width=1100,
+            height=750,
+            frameless=True,
+            easy_drag=True,
+            background_color='#0a0a0a',
+            hidden=hidden
+        )
+
+        def on_closing():
+            if self.window:
+                self.window.hide()
+            return False # Cancel the close event
+
+        self.window.events.closing += on_closing
+
+        # Inject window reference into API for maximize/minimize REST calls
+        import api
+        api.app_window = self.window
+
+        return self.window
+
+    def _open_settings(self, icon=None, item=None):
+        if self.window is not None:
+            try:
+                self.window.show()
+                self.window.restore()
+            except Exception as e:
+                app_logger.error(f"Failed to show window: {e}")
+
+    def _quit_app(self, icon=None, item=None):
+        self._graceful_shutdown()
+
+    def _graceful_shutdown(self):
+        shutdown_event.set()
         
-        global _worker
-        _worker = CoreWorker()
-        window = gui.MainWindow()
-        window.toggle_app_signal.connect(lambda: _worker.set_enabled(window.app_enabled))
-        window.hotkeys_changed_signal.connect(_worker.setup_hotkeys)
-        
-        # Connect auto/manual mode toggle from GUI
-        if hasattr(window, 'mode_changed_signal'):
-            window.mode_changed_signal.connect(lambda auto: setattr(_worker, 'auto_mode', auto))
-            
-        # Initialize Floating Bubble
-        from floating_bubble import FloatingBubble
-        bubble = FloatingBubble(_worker)
-        if settings.get_setting("show_floating_bubble"):
-            bubble.show()
-        
-        # We need to keep a reference to the bubble so it isn't garbage collected
-        app.bubble = bubble
-        
-        window.show()
-        
-        _worker.start()
-        
-        # Game detector in background thread
-        game_detector.start(on_change_callback=lambda is_fs: _worker.set_enabled(not is_fs and window.app_enabled))
+        if hasattr(self, '_watchdog') and self._watchdog:
+            try:
+                self._watchdog.stop()
+            except Exception:
+                pass
+                
+        self.core.stop()
         
         try:
-            ret = app.exec()
-            sys.exit(ret)
+            from ai import learner
+            if hasattr(learner, '_save_model_with_manifest'):
+                learner._save_model_with_manifest()
         except Exception as e:
-            raise
-    except Exception as e:
-        import traceback
-        with open("crash2.txt", "w", encoding="utf-8") as f:
-            f.write(traceback.format_exc())
-        raise
+            app_logger.error(f"Error saving model on shutdown: {e}")
+            
+        settings.force_save_settings()
+        
+        try:
+            from utils.event_bus import event_bus
+            if hasattr(event_bus, 'close'):
+                event_bus.close()
+        except Exception:
+            pass
+            
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
+                
+        ctypes.windll.kernel32.CloseHandle(_mutex_handle)
+        os._exit(0)
 
-if __name__ == "__main__":
-    print("BEFORE MAIN", flush=True)
-    main()
-    print("AFTER MAIN", flush=True)
+    def _register_power_hook(self):
+        """
+        Registers a hidden Win32 message window to listen for WM_POWERBROADCAST.
+        Pauses the hook on system sleep, re-registers on wake with backoff.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        WM_POWERBROADCAST = 0x0218
+        PBT_APMSUSPEND = 0x0004
+        PBT_APMRESUMEAUTOMATIC = 0x0012
+        HWND_MESSAGE = -3
+
+        WndProcType = ctypes.WINFUNCTYPE(
+            wintypes.LPARAM, wintypes.HWND, wintypes.UINT,
+            wintypes.WPARAM, wintypes.LPARAM
+        )
+
+        class WNDCLASSW(ctypes.Structure):
+            _fields_ = [
+                ("style",         wintypes.UINT),
+                ("lpfnWndProc",   WndProcType),
+                ("cbClsExtra",    ctypes.c_int),
+                ("cbWndExtra",    ctypes.c_int),
+                ("hInstance",     wintypes.HINSTANCE),
+                ("hIcon",         wintypes.HANDLE),
+                ("hCursor",       wintypes.HANDLE),
+                ("hbrBackground", wintypes.HANDLE),
+                ("lpszMenuName",  wintypes.LPCWSTR),
+                ("lpszClassName", wintypes.LPCWSTR),
+            ]
+
+        def wnd_proc(hwnd, msg, wparam, lparam):
+            if msg == WM_POWERBROADCAST:
+                if wparam == PBT_APMSUSPEND:
+                    app_logger.info("[POWER] System sleep detected — pausing hook.")
+                    self.core.keyboard.stop()
+                elif wparam == PBT_APMRESUMEAUTOMATIC:
+                    app_logger.info("[POWER] System wake detected — resuming hook.")
+                    backoff = 0.05
+                    for attempt in range(3):
+                        try:
+                            import time
+                            time.sleep(backoff)
+                            self.core.keyboard.start()
+                            break
+                        except Exception as e:
+                            app_logger.warning(f"[POWER] Wake re-hook attempt {attempt+1} failed: {e}")
+                            backoff *= 2
+            return ctypes.windll.user32.DefWindowProcW(
+                wintypes.HWND(hwnd), 
+                wintypes.UINT(msg), 
+                wintypes.WPARAM(wparam), 
+                wintypes.LPARAM(lparam)
+            )
+
+        # Keep a reference so it's not garbage collected
+        self._power_proc = WndProcType(wnd_proc)
+        
+        wc = WNDCLASSW()
+        wc.lpfnWndProc = self._power_proc
+        wc.lpszClassName = "LayvixPowerHookClass"
+        wc.hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)
+        
+        ctypes.windll.user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        ctypes.windll.user32.DefWindowProcW.restype = wintypes.LPARAM
+        
+        ctypes.windll.user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+        ctypes.windll.user32.RegisterClassW.restype = wintypes.ATOM
+        
+        ctypes.windll.user32.CreateWindowExW.argtypes = [
+            wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID
+        ]
+        ctypes.windll.user32.CreateWindowExW.restype = wintypes.HWND
+        
+        ctypes.windll.user32.RegisterClassW(ctypes.byref(wc))
+        
+        hwnd = ctypes.windll.user32.CreateWindowExW(
+            0,
+            wc.lpszClassName,
+            "LayvixPowerHook",
+            0, 0, 0, 0, 0,
+            0, 0, wc.hInstance, None
+        )
+        
+        if not hwnd:
+            app_logger.error("[POWER] Failed to create power hook window.")
+            return
+
+        msg = wintypes.MSG()
+        while ctypes.windll.user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
+            ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
+            ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
+
+    def _prepare_icons(self):
+        # Icons are now pre-generated by convert_icon.py and stored in data/
+        pass
+
+    def _get_icon_path(self, state, size):
+        # We rely on the pre-generated 64px tray icons in data/
+        base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base_dir, "data", f"tray_icon_64_{state}.png")
+
+    def _update_tray_icon(self, state):
+        if not hasattr(self, 'tray_icon') or not self.tray_icon: 
+            return
+        try:
+            png_path = self._get_icon_path(state, 64)
+            if os.path.exists(png_path):
+                img = Image.open(png_path)
+                self.tray_icon.icon = img
+                self.tray_icon.title = f"Layvix — {state.capitalize()}"
+        except Exception as e:
+            app_logger.error(f"Failed to update tray icon: {e}")
+
+    def _toggle_active_app(self, icon, item):
+        import ctypes
+        from core.security_guard import get_process_name_from_hwnd
+        from utils import settings
+        
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return
+            
+        process_name = get_process_name_from_hwnd(hwnd)
+        if not process_name:
+            return
+            
+        excluded = settings.get_setting("excluded_apps", [])
+        whitelisted = settings.get_setting("whitelisted_apps", [])
+        
+        # If it's excluded, remove from excluded and add to whitelisted (Force Enable)
+        if process_name in excluded:
+            excluded.remove(process_name)
+            if process_name not in whitelisted:
+                whitelisted.append(process_name)
+            settings.set_setting("excluded_apps", excluded)
+            settings.set_setting("whitelisted_apps", whitelisted)
+            app_logger.info(f"Tray: Force Enabled (Whitelisted) {process_name}")
+            return
+            
+        # If it's whitelisted, remove from whitelisted (Neutral)
+        if process_name in whitelisted:
+            whitelisted.remove(process_name)
+            settings.set_setting("whitelisted_apps", whitelisted)
+            app_logger.info(f"Tray: Removed {process_name} from whitelist")
+            return
+            
+        # Otherwise, add to excluded (Force Disable)
+        if process_name not in excluded:
+            excluded.append(process_name)
+            settings.set_setting("excluded_apps", excluded)
+            app_logger.info(f"Tray: Force Disabled (Excluded) {process_name}")
+
+    def _run_tray(self):
+        self._prepare_icons()
+        initial_state = 'active' if self.core.app_enabled else 'paused'
+        png_path = self._get_icon_path(initial_state, 64)
+        
+        if os.path.exists(png_path):
+            image = Image.open(png_path)
+        else:
+            image = self._create_tray_image()
+            
+        menu = pystray.Menu(
+            pystray.MenuItem('Open Control Center', self._open_settings, default=True),
+            pystray.MenuItem('Quit', self._quit_app)
+        )
+        self.tray_icon = pystray.Icon("Layvix", image, f"Layvix — {initial_state.capitalize()}", menu)
+        
+        # Hook up state changes
+        self.core.on_status_change = self._update_tray_icon
+        
+        self.tray_icon.run()
+
+    def run(self):
+        # Boot Order Maintained:
+        # 1. Load AI First
+        from ai import ai_engine
+        ai_engine.load_model()
+
+        # 2. Start Core Engine
+        self.core.start()
+        
+        try:
+            from core.watchdog import WatchdogThread
+            self._watchdog = WatchdogThread(self.core.keyboard)
+            self._watchdog.start()
+        except ImportError:
+            pass  # Will be implemented in T005
+
+        import api
+        api.core_engine_instance = self.core
+        api.trigger_shutdown_callback = self._graceful_shutdown
+
+        # 3. Start FastAPI Thread
+        api_thread = threading.Thread(target=start_fastapi, args=(self.port,), daemon=True, name="FastAPIThread")
+        api_thread.start()
+
+        # 4. Start Tray Icon & PyWebView
+        threading.Thread(target=self._run_tray, daemon=True).start()
+
+        # 5. Start Power Hook Thread
+        threading.Thread(target=self._register_power_hook, daemon=True, name="PowerHookThread").start()
+        
+        try:
+            import signal
+            signal.signal(signal.SIGTERM, lambda *_: self._graceful_shutdown())
+            signal.signal(signal.SIGINT, lambda *_: self._graceful_shutdown())
+        except AttributeError:
+            pass # Windows might not support all signals
+
+        if "--startup" not in sys.argv and not settings.get_setting("start_minimized", False):
+            self._build_window(hidden=False)
+        else:
+            self._build_window(hidden=True)
+
+        try:
+            webview.start(debug=False)
+        except Exception as e:
+            app_logger.error(f"Failed to start webview: {e}")
+
+        # Webview loop exited, shutdown
+        self._graceful_shutdown()
+        return 0
+
+if __name__ == '__main__':
+    app = LayvixApp()
+    sys.exit(app.run())
+

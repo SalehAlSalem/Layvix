@@ -1,0 +1,49 @@
+.titlebar-container {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  height: 100%;
+  width: 100%;
+  background-color: var(--void-bg);
+  -webkit-app-region: drag; /* Makes the area draggable in frameless electron/webview */
+  user-select: none;
+}
+
+.titlebar-controls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag; /* Buttons must be non-draggable to be clickable */
+}
+
+.titlebar-btn {
+  background: transparent;
+  border: none;
+  color: var(--gray-light);
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.titlebar-btn:hover {
+  background-color: var(--gray-dark);
+  color: var(--text-white);
+}
+
+.titlebar-btn.close:hover {
+  background-color: #e81123;
+  color: white;
+}
+
+.titlebar-icon {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}

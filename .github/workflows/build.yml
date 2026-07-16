@@ -20,7 +20,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.13' # Or whatever version is required
+        python-version: '3.12' # Or whatever version is required
         cache: 'pip'
 
     - name: Install Dependencies
@@ -28,18 +28,44 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Build Frontend
+      run: |
+        cd frontend
+        npm install
+        npm run build
+        cd ..
+
     - name: Build with PyInstaller
       run: |
-        pyinstaller --noconfirm Layvix.spec
+        pyinstaller --noconfirm build_tools/Layvix.spec
+        
+    # Create portable.txt so the exe uses local data folder
+    - name: Setup Portable Data
+      run: |
+        New-Item -ItemType File -Path "dist/Layvix/portable.txt" -Force
 
     - name: Create Zip Archive
       run: |
         Compress-Archive -Path dist\Layvix\* -DestinationPath dist\Layvix-Portable.zip
 
-    - name: Build Inno Setup Installer
+    - name: Compile Inno Setup Installer
       run: |
-        # ISCC is pre-installed on GitHub Actions Windows runners
-        iscc LayvixSetup.iss
+        # Remove portable.txt before building installer to prevent contamination
+        Remove-Item -Path "dist/Layvix/portable.txt" -Force -ErrorAction SilentlyContinue
+        # Ensure we pass the GitHub tag as the AppVersion (or a default)
+        if ("${{ github.ref }}" -like "refs/tags/*") {
+            $tag = "${{ github.ref }}".Replace("refs/tags/", "")
+            $version = $tag.TrimStart('v')
+        } else {
+            $version = "1.0.0-dev"
+        }
+        iscc /DAppVersion=$version build_tools\LayvixSetup.iss
+      shell: powershell
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2

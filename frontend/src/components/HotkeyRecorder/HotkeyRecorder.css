@@ -1,0 +1,78 @@
+.hotkey-recorder-group {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.hotkey-display {
+  display: flex;
+  align-items: center;
+  min-width: 180px;
+}
+
+.hotkey-keys-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 150ms var(--ease-out);
+}
+
+.hotkey-keys-wrapper.saved-flash .hotkey-key-pill {
+  background-color: rgba(0, 201, 143, 0.15);
+  border-color: #00C98F;
+  color: #00C98F;
+}
+
+.hotkey-key-pill {
+  background-color: #1A2030;
+  border: 1px solid #252A3A;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #C0C0C0;
+  transition: all 150ms var(--ease-out);
+}
+
+.hotkey-key-separator {
+  color: #3A3A5A;
+  padding: 0 4px;
+  font-weight: 500;
+}
+
+.hotkey-unassigned {
+  color: #4A5568;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.hotkey-listening {
+  color: #00C98F;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  animation: pulse-listen 1.5s infinite;
+}
+
+.hotkey-edit-btn {
+  background: transparent;
+  border: none;
+  color: #4A5568;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: color 150ms var(--ease-out), background-color 150ms var(--ease-out);
+}
+
+.hotkey-edit-btn:hover {
+  color: #E0E0E0;
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+@keyframes pulse-listen {
+  0% { opacity: 0.5; }
+  50% { opacity: 1; }
+  100% { opacity: 0.5; }
+}

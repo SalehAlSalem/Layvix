@@ -1,0 +1,45 @@
+.activity-container {
+  height: 120px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+  background-color: #0A0A0A;
+}
+
+.activity-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.activity-y-axis-label {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #3A3A4A;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.activity-pulse-path {
+  fill: none;
+  stroke: #00C98F;
+  stroke-width: 1.5px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: d 1.5s linear;
+}
+
+.activity-gradient {
+  fill: url(#pulse-gradient);
+}
+
+.reference-line {
+  stroke: #2A3A5A;
+  stroke-width: 1px;
+  stroke-dasharray: 4 4;
+}

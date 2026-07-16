@@ -1,14 +1,10 @@
-keyboard
 pystray
 Pillow
-plyer
-PyQt6
-pyperclip
 pyinstaller
-pynput
+pywin32
+pywebview
 scikit-learn
 numpy
 scipy
-pywin32
-
-mouse
+# hashlib (stdlib)
+cairosvg>=2.7.0
