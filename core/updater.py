@@ -6,7 +6,9 @@ import threading
 from urllib.error import URLError, HTTPError
 
 from version import __version__
-from utils.logger import app_logger
+from utils.logger import get_logger
+
+app_logger = get_logger()
 
 GITHUB_REPO = "SalehAlSalem/Layvix"
 API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
