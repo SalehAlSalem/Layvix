@@ -157,20 +157,20 @@ Layvix/
 
 ---
 
-## Developer
+## 👨‍💻 Author
 
-<table>
-  <tr>
-    <td align="center">
-      <a href="https://github.com/SalehAlSalem">
-        <img src="https://github.com/SalehAlSalem.png" width="80" style="border-radius: 50%;" /><br/>
-        <strong>Saleh Al Salem</strong>
-      </a>
-      <br/>
-      <sub>Designer · Developer · Builder</sub>
-    </td>
-  </tr>
-</table>
+**Saleh Al Salem** — [@SalehAlSalem](https://github.com/SalehAlSalem)
+
+---
+
+## 🙏 Acknowledgments
+
+- **[pynput](https://github.com/moses-palmer/pynput)** — Low-level keyboard & mouse hook library that makes global hotkeys possible
+- **[Scikit-Learn](https://scikit-learn.org/)** — The ML backbone powering the layout classification model
+- **[FastAPI](https://fastapi.tiangolo.com/)** — The async API bridge between the Python core and the React frontend
+- **[pywebview](https://pywebview.flowrl.com/)** — Wraps the web UI into a native frameless Windows window
+- **[PyInstaller](https://pyinstaller.org/)** — Bundles the entire app into a single portable `.exe`
+- **[React](https://react.dev/) + [Vite](https://vite.dev/)** — Fast, modern frontend tooling for the control center UI
 
 ---
 
