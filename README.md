@@ -1,5 +1,4 @@
 <div align="center">
-  <img src="assets/github/logo.png" alt="Layvix Logo" width="150" />
   <h1>Layvix Pro</h1>
   <p><b>An ultra-fast, AI-powered smart keyboard layout auto-corrector for Windows.</b></p>
 
@@ -12,10 +11,6 @@
 </div>
 
 <br />
-
-<div align="center">
-  <img src="assets/github/dashboard.png" alt="Layvix Dashboard" width="800" style="border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
-</div>
 
 ## 💡 What is Layvix?
 
