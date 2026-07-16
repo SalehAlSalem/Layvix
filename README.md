@@ -1,96 +1,185 @@
 <div align="center">
-  <img src="assets/icons/icon-active.svg" alt="Layvix Logo" width="120" />
-  <h1>Layvix Pro</h1>
-  <p><b>An ultra-fast, AI-powered smart keyboard layout auto-corrector for Windows.</b></p>
-
-  <!-- Badges -->
-  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-blue?logo=windows" />
-  <img src="https://img.shields.io/badge/version-v4.1.0-success" />
-  <img src="https://img.shields.io/badge/license-MIT-green" />
-  <img src="https://img.shields.io/badge/python-3.11+-blue.svg" />
-  <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black" />
-</div>
 
 <br />
 
-<div align="center">
-  <img src="assets/github/dashboard.png" alt="Layvix Dashboard" width="800" style="border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
+<img src="assets/icons/icon-active.svg" alt="Layvix" width="80" />
+
+<h1>Layvix Pro</h1>
+
+<p><strong>AI-powered keyboard layout auto-corrector for Windows.</strong><br/>
+Types in the wrong language? Layvix silently fixes it — in under 10ms.</p>
+
+<br/>
+
+[![Release](https://img.shields.io/github/v/release/SalehAlSalem/Layvix?color=4CAF50&label=Latest%20Release&style=flat-square)](https://github.com/SalehAlSalem/Layvix/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D4?style=flat-square&logo=windows)](https://github.com/SalehAlSalem/Layvix/releases/latest)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
+[![License](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
+
+<br/>
+
+<img src="assets/github/dashboard.png" alt="Layvix Pro Dashboard" width="850" style="border-radius: 12px;" />
+
+<br/><br/>
+
+[**⬇ Download**](https://github.com/SalehAlSalem/Layvix/releases/latest) · [**📖 Docs**](docs/) · [**🐛 Report Bug**](https://github.com/SalehAlSalem/Layvix/issues)
+
 </div>
 
-## 💡 What is Layvix?
+---
 
-Have you ever typed a long Arabic sentence only to realize your keyboard was in English? Or vice-versa? **Layvix** is an intelligent, zero-lag background service that detects gibberish typing caused by incorrect keyboard layouts. It automatically corrects the text *and* switches your keyboard layout on the fly. 
+## The Problem
 
-Designed for speed and security, Layvix runs completely offline using a lightweight AI model, ensuring your keystrokes never leave your machine.
+You're typing fast in Arabic. But your keyboard was in English the whole time — and now you have a paragraph of gibberish like `اباؤاهؤفؤضي ؤاشثي`. You have to delete everything and retype.
+
+**This happens hundreds of times a day to bilingual typists.** Layvix eliminates the problem entirely.
 
 ---
 
-## ✨ Key Features
+## What Layvix Does
 
-- **🚀 Sub-10ms Latency:** Engineered for gamers and rapid typists. Intercepts and corrects keystrokes without any noticeable delay.
-- **🧠 Local AI Engine:** Utilizes an offline Scikit-Learn `PassiveAggressiveClassifier` that continuously learns from your personal dictionary and typing habits.
-- **🔒 Security Context Awareness:** Automatically pauses itself when it detects secure inputs (e.g., password fields) or full-screen gaming to prevent interference.
-- **⚡ Retroactive Correction:** Select gibberish text you already typed, press a hotkey, and Layvix will translate it to the correct layout instantly.
-- **🔄 Auto-Updater:** Seamless GitHub integration. It checks for updates on startup, downloads them in the background, and seamlessly hot-swaps the executable.
-- **🎨 Modern React Dashboard:** A beautiful, dark-themed control center built with React and Vite, communicating via a fast local API.
+Layvix runs invisibly in the background as a Windows tray service. The moment you finish typing a word, it decides — in under 10 milliseconds — whether the text is gibberish from a wrong keyboard layout. If it is, Layvix corrects it automatically and switches your layout.
+
+No popups. No interruptions. It just works.
 
 ---
 
-## 🏗️ Architecture & Tech Stack
+## Features
 
-Layvix is built as a hybrid application, combining the raw performance of Python's OS-level hooks with a modern web UI:
-
-1. **Core Engine (Python):** Uses `pynput` and `ctypes` to hook into the Windows event loop, capturing raw `WM_KEYDOWN` events globally before they reach the OS.
-2. **Prediction Model:** A highly optimized N-gram frequency model + Scikit-Learn classifier that determines the probability of text being Arabic vs. English gibberish.
-3. **Local API (FastAPI/Uvicorn):** A lightweight asynchronous server that acts as a bridge between the core engine and the frontend.
-4. **Frontend (React/Vite):** A stunning, responsive control center wrapped inside a PyWebView container for a native desktop feel.
-5. **Compiler (PyInstaller):** Bundled into a single, portable `.exe` file requiring zero installation.
-
----
-
-## 🚀 Installation & Usage
-
-1. Go to the [Releases](../../releases) page.
-2. Download the latest `LayvixProPortable.exe`.
-3. Run the executable. It will silently appear in your System Tray.
-4. Right-click the tray icon and select **Open Control Center** to configure your hotkeys, dictionary, and exclusions.
-
-> **Note:** Layvix is a portable executable. No installation is required.
+| Feature | Description |
+|---|---|
+| 🚀 **Sub-10ms Correction** | Raw OS-level keyboard hooks. Zero perceptible lag, even at 120+ WPM. |
+| 🧠 **Local AI Engine** | An offline ML model (Scikit-Learn) trained on millions of words. Gets smarter from your own typing habits. |
+| 🔒 **Security-Aware** | Automatically disables itself on password fields and full-screen applications. Your keystrokes never leave your machine. |
+| ⚡ **Retroactive Correction** | Select gibberish text you already typed and press a hotkey — Layvix translates it instantly. |
+| 🔄 **Auto-Updater** | Checks GitHub for new versions on startup. Downloads and hot-swaps the executable in the background — no reinstallation needed. |
+| 🎨 **Modern Control Center** | A dark-themed React dashboard with live latency graphs, correction logs, hotkey customization, and app exclusion lists. |
+| 🧩 **App Exclusions** | Block Layvix from running in specific apps (games, IDEs, etc.) with a click. |
+| 📚 **Personal Dictionary** | Add custom word pairs. Layvix will always correct them exactly as you specify. |
 
 ---
 
-## 🛠️ Building from Source
+## Architecture
 
-If you want to compile Layvix yourself:
+Layvix is a full-stack desktop application built as a hybrid Python/React system:
 
-### 1. Clone the repository
-```bash
-git clone https://github.com/SalehAlSalem/Layvix.git
-cd Layvix
+```
+┌─────────────────────────────────────────────────────────┐
+│                  LayvixProPortable.exe                   │
+│                                                         │
+│  ┌──────────────────┐     ┌──────────────────────────┐  │
+│  │   Core Engine    │     │    React Frontend (UI)   │  │
+│  │   (Python)       │◄───►│    (Vite + TypeScript)   │  │
+│  │                  │     │                          │  │
+│  │  pynput hooks    │     │  FastAPI REST + SSE      │  │
+│  │  AI Classifier   │     │  PyWebView (native win)  │  │
+│  │  OS keyboard API │     │                          │  │
+│  └──────────────────┘     └──────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### 2. Set up the Python Environment
+**Tech Stack:**
+
+- **Core:** Python 3.11 · `pynput` · `ctypes` · `win32api`
+- **AI Model:** Scikit-Learn `PassiveAggressiveClassifier` · N-gram features · Online learning
+- **Bridge API:** FastAPI · Uvicorn · Server-Sent Events (SSE) for real-time push
+- **Frontend:** React 18 · TypeScript · Vite · Vanilla CSS
+- **Packaging:** PyInstaller (single portable `.exe`, no installer required)
+
+---
+
+## Installation
+
+Layvix is a **portable executable** — no installer, no admin rights, no dependencies.
+
+1. Go to the [**Releases**](https://github.com/SalehAlSalem/Layvix/releases/latest) page
+2. Download `LayvixProPortable.exe`
+3. Run it — it appears silently in your **System Tray**
+4. Right-click the tray icon → **Open Control Center**
+
+> **Windows Defender Warning:** You may see a SmartScreen warning because the executable is not signed with a paid certificate. Click "More info" → "Run anyway". The full source code is available here for review.
+
+---
+
+## Building from Source
+
 ```bash
+# 1. Clone
+git clone https://github.com/SalehAlSalem/Layvix.git
+cd Layvix
+
+# 2. Python environment
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-### 3. Build the Frontend
-```bash
-cd frontend
-npm install
-npm run build
-cd ..
-```
+# 3. Frontend
+cd frontend && npm install && npm run build && cd ..
 
-### 4. Compile the Executable
-```bash
-venv\Scripts\pyinstaller.exe LayvixProPortable.spec --clean
+# 4. Build portable executable (runs npm build + pyinstaller automatically)
+python build_portable.py
+# → Output: dist/LayvixProPortable.exe
 ```
-Your compiled app will be available in the `dist/` directory.
 
 ---
 
-## 📝 License
-This project is licensed under the MIT License.
+## Project Structure
+
+```
+Layvix/
+├── main.py              # Entry point — tray icon, window, startup
+├── api.py               # FastAPI server — all REST + SSE endpoints
+├── version.py           # Version string for auto-updater
+├── core/
+│   ├── core_engine.py   # Keyboard hook, word detection, correction logic
+│   ├── keyboard_hook.py # Low-level pynput hook management
+│   ├── updater.py       # GitHub release checker + installer
+│   ├── app_scanner.py   # Active window & installed app detection
+│   ├── security_guard.py# Secure input detection (passwords, UAC)
+│   └── watchdog.py      # Process health monitoring
+├── ai/
+│   ├── ai_engine.py     # ML model: predict, train, save/load
+│   └── learner.py       # Online learning from user corrections
+├── utils/
+│   ├── settings.py      # Persistent settings (JSON)
+│   ├── logger.py        # Rotating log handler + UI event bus
+│   ├── event_bus.py     # Async pub/sub for SSE streaming
+│   └── user_dictionary.py # Custom correction pairs
+├── frontend/            # React + TypeScript UI source
+│   └── src/
+│       ├── views/       # Dashboard, General, Hotkeys, Dictionary...
+│       └── components/  # Sidebar, TitleBar, StatsBar, etc.
+├── data/                # Icons, word lists, default assets
+├── docs/                # Technical documentation
+└── build_portable.py    # One-command build script
+```
+
+---
+
+## Developer
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/SalehAlSalem">
+        <img src="https://github.com/SalehAlSalem.png" width="80" style="border-radius: 50%;" /><br/>
+        <strong>Saleh Al Salem</strong>
+      </a>
+      <br/>
+      <sub>Designer · Developer · Builder</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
+## License
+
+MIT License — feel free to use, fork, and build on this project. See [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+  <sub>Built with ❤️ for everyone who types in more than one language.</sub>
+</div>
