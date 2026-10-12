@@ -223,19 +223,36 @@ def clear_clipboard():
 
 def set_clipboard_text(text):
     try:
+        kernel32 = ctypes.windll.kernel32
+        
+        # Explicitly define 64-bit types to prevent OverflowError on 64-bit Windows
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.EmptyClipboard.argtypes = []
+        user32.EmptyClipboard.restype = wintypes.BOOL
+        user32.CloseClipboard.argtypes = []
+        user32.CloseClipboard.restype = wintypes.BOOL
+        user32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
+        user32.SetClipboardData.restype = ctypes.c_void_p
+
         if not user32.OpenClipboard(0):
             return
         user32.EmptyClipboard()
-        kernel32 = ctypes.windll.kernel32
         
         # GMEM_MOVEABLE = 0x0002
         byte_len = (len(text) + 1) * 2
         handle = kernel32.GlobalAlloc(0x0002, byte_len)
         if handle:
             pcontents = kernel32.GlobalLock(handle)
-            ctypes.memmove(pcontents, text.encode('utf-16le'), byte_len)
-            kernel32.GlobalUnlock(handle)
-            user32.SetClipboardData(13, handle) # CF_UNICODETEXT = 13
+            if pcontents:
+                ctypes.memmove(pcontents, text.encode('utf-16le'), byte_len)
+                kernel32.GlobalUnlock(handle)
+                user32.SetClipboardData(13, handle) # CF_UNICODETEXT = 13
         user32.CloseClipboard()
     except Exception as e:
         logger.error(f"Failed to set clipboard: {e}")

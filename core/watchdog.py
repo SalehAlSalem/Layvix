@@ -30,17 +30,22 @@ class WatchdogThread:
     def _run(self):
         time.sleep(self.INITIAL_GRACE)  # Let the hook fully start first
         while not self._stop.is_set():
-            kbd_thread = getattr(self._keyboard, '_hook_thread', None)
-            is_alive = kbd_thread is not None and kbd_thread.is_alive()
-            if not is_alive and not self._stop.is_set():
-                logger.critical(
-                    "[WATCHDOG] Hook thread dead! Attempting auto-revive..."
-                )
-                try:
-                    self._keyboard.stop()
-                    time.sleep(0.1)
-                    self._keyboard.start()
-                    logger.info("[WATCHDOG] Hook thread revived successfully.")
-                except Exception as e:
-                    logger.critical(f"[WATCHDOG] Auto-revive FAILED: {e}")
+            is_running = getattr(self._keyboard, 'is_running', False)
+            is_sleeping = getattr(self._keyboard, 'is_sleeping', False)
+            
+            # If hook was intentionally stopped or system is asleep, do NOT revive
+            if is_running and not is_sleeping:
+                kbd_thread = getattr(self._keyboard, '_hook_thread', None)
+                is_alive = kbd_thread is not None and kbd_thread.is_alive()
+                if not is_alive and not self._stop.is_set():
+                    logger.critical(
+                        "[WATCHDOG] Hook thread dead! Attempting auto-revive..."
+                    )
+                    try:
+                        self._keyboard.stop()
+                        time.sleep(0.1)
+                        self._keyboard.start()
+                        logger.info("[WATCHDOG] Hook thread revived successfully.")
+                    except Exception as e:
+                        logger.critical(f"[WATCHDOG] Auto-revive FAILED: {e}")
             self._stop.wait(timeout=self.CHECK_INTERVAL)

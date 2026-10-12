@@ -54,6 +54,8 @@ class KeyboardHookManager:
     def __init__(self):
         self.kbd_hook_id = None
         self.mouse_hook_id = None
+        self.is_running = False
+        self.is_sleeping = False
         
         self.on_key_down = None # Callback: fn(vk_code, scan_code, char_str) -> bool (True to suppress)
         self.on_mouse_click = None # Callback: fn() -> None
@@ -63,10 +65,15 @@ class KeyboardHookManager:
         self.thread_id = None
         self._hook_thread = None
 
+    def set_sleeping(self, sleeping: bool):
+        self.is_sleeping = sleeping
+
     def start(self):
+        self.is_running = True
         if self.kbd_hook_id is not None or self.mouse_hook_id is not None:
             logger.warning("[HOOK] Attempted to start hook while another is active! Stopping old hook first.")
             self.stop()
+            self.is_running = True
             
         def _run_hook():
             self.thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
@@ -89,6 +96,7 @@ class KeyboardHookManager:
         self._hook_thread.start()
 
     def stop(self):
+        self.is_running = False
         if self.kbd_hook_id:
             user32.UnhookWindowsHookEx(self.kbd_hook_id)
             self.kbd_hook_id = None

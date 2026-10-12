@@ -180,9 +180,13 @@ class LayvixApp:
             if msg == WM_POWERBROADCAST:
                 if wparam == PBT_APMSUSPEND:
                     app_logger.info("[POWER] System sleep detected — pausing hook.")
+                    if hasattr(self.core.keyboard, 'set_sleeping'):
+                        self.core.keyboard.set_sleeping(True)
                     self.core.keyboard.stop()
                 elif wparam == PBT_APMRESUMEAUTOMATIC:
                     app_logger.info("[POWER] System wake detected — resuming hook.")
+                    if hasattr(self.core.keyboard, 'set_sleeping'):
+                        self.core.keyboard.set_sleeping(False)
                     backoff = 0.05
                     for attempt in range(3):
                         try:
